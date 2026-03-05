@@ -76,10 +76,13 @@ POS_INDICES = [0, 1, 2]  # position indices in state vector
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
+DOWNSAMPLE = 10         # 200Hz -> 20Hz (dt = 0.05s)
+DT = 0.005 * DOWNSAMPLE # 0.05s per step
+
 TRAIN_RATIO = 0.7
-SEQ_LEN = 50            # training sequence length (0.25s @ 200Hz)
+SEQ_LEN = 100           # training sequence length (5.0s @ 20Hz)
 BATCH_SIZE = 256
-EPOCHS = 200
+EPOCHS = 300
 LR = 3e-4
 WEIGHT_DECAY = 1e-5
 LATENT_DIM = 128
@@ -88,17 +91,21 @@ GRU_LAYERS = 2
 DROPOUT = 0.1
 PATIENCE = 40
 LR_PATIENCE = 12
-DREAM_STEPS = 2000      # dream rollout length for evaluation (10s)
+DREAM_STEPS = 400       # dream rollout length for evaluation (20s @ 20Hz)
 
-# Scheduled Sampling: linearly increase autoregressive ratio
-SS_START_EPOCH = 5      # start scheduled sampling after this epoch
-SS_END_EPOCH = 100      # reach max autoregressive ratio by this epoch
-SS_MAX_RATIO = 0.5      # max probability of using own prediction
+# Scheduled Sampling
+SS_START_EPOCH = 5
+SS_END_EPOCH = 100
+SS_MAX_RATIO = 0.5
 
 # Multi-step rollout loss
-ROLLOUT_STEPS = 20      # K-step rollout during training (0.1s)
-ROLLOUT_WEIGHT = 0.3    # weight of rollout loss vs single-step loss
-ROLLOUT_EVERY_N = 4     # compute rollout loss every N batches
+ROLLOUT_STEPS = 20      # K-step rollout (1.0s @ 20Hz)
+ROLLOUT_WEIGHT = 0.3
+ROLLOUT_EVERY_N = 4
+
+# Dream validation for early stopping
+DREAM_VAL_STEPS = 100   # 5s dream for validation metric
+DREAM_VAL_EVERY = 5     # evaluate dream every N epochs
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -230,9 +237,9 @@ class WAM(nn.Module):
 
 # ─── Data Loading ─────────────────────────────────────────────────────────────
 
-def load_multi_lap_data(raw_dir: Path, train_ratio: float):
+def load_multi_lap_data(raw_dir: Path, train_ratio: float, downsample: int = 1):
     """
-    Load all complete laps, split each lap 7:3 by time.
+    Load all complete laps, downsample, split each lap 7:3 by time.
     Returns training/validation segments as lists of (state, action) arrays,
     plus concatenated arrays for normalization.
     """
@@ -248,6 +255,9 @@ def load_multi_lap_data(raw_dir: Path, train_ratio: float):
             print(f"    skip {f.name} (partial lap)")
             continue
         df = pd.read_csv(f, comment="#")
+        # Downsample
+        if downsample > 1:
+            df = df.iloc[::downsample].reset_index(drop=True)
         s = df[STATE_COLS].values.astype(np.float64)
         a = df[ACTION_COLS].values.astype(np.float64)
         n = len(df)
@@ -257,7 +267,7 @@ def load_multi_lap_data(raw_dir: Path, train_ratio: float):
         all_train_s.append(s[:split])
         all_train_a.append(a[:split])
         name = f"Lap{suffix}" if suffix else "Lap_0"
-        print(f"    {name}: {n} pts -> train={split}, val={n-split}")
+        print(f"    {name}: {n} pts (ds={downsample}) -> train={split}, val={n-split}")
 
     # Compute normalization from all training data
     all_s = np.concatenate(all_train_s, axis=0)
@@ -384,8 +394,31 @@ def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, pos_w
     return rollout_loss / K
 
 
-def train_model(model, train_loader, val_loader, config):
-    """Train with scheduled sampling + multi-step rollout loss."""
+def dream_val_error(model, val_seg_n, dream_steps, norm, device):
+    """Quick dream rollout on one val segment, return mean 3D position error (m)."""
+    model.eval()
+    s_n, a_n = val_seg_n
+    T = min(dream_steps, len(s_n) - 1)
+    if T <= 0:
+        return float("inf")
+
+    init = torch.tensor(s_n[0], dtype=torch.float32).unsqueeze(0).to(device)
+    acts = torch.tensor(a_n[:T], dtype=torch.float32).unsqueeze(0).to(device)
+
+    pred_n = model.dream(init, acts).squeeze(0).cpu().numpy()  # [T, sd]
+
+    s_mean, s_std = norm["s_mean"], norm["s_std"]
+    pred_raw = pred_n * s_std + s_mean
+    gt_raw = (s_n[:T] * s_std + s_mean)  # denorm GT
+
+    pos_err = pred_raw[:, POS_INDICES] - gt_raw[:, POS_INDICES]
+    dist_3d = np.sqrt(np.sum(pos_err ** 2, axis=1))
+    return float(np.mean(dist_3d))
+
+
+def train_model(model, train_loader, val_loader, val_seg_n, norm, config):
+    """Train with scheduled sampling + multi-step rollout loss.
+    Early stopping uses dream rollout error instead of teacher-forcing loss."""
     device = config["device"]
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"],
@@ -397,10 +430,11 @@ def train_model(model, train_loader, val_loader, config):
     pos_weight = torch.ones(STATE_DIM, device=device)
     pos_weight[POS_INDICES] = 5.0
 
-    best_val_loss = float("inf")
+    best_dream_err = float("inf")
     best_state = None
     no_improve = 0
-    history = {"train_loss": [], "val_loss": [], "lr": [], "ss_ratio": []}
+    history = {"train_loss": [], "val_loss": [], "dream_err": [],
+               "lr": [], "ss_ratio": []}
 
     for epoch in range(1, config["epochs"] + 1):
         ss_ratio = scheduled_sampling_ratio(
@@ -434,7 +468,7 @@ def train_model(model, train_loader, val_loader, config):
 
         train_loss = np.mean(train_losses)
 
-        # ---- Validate (teacher forcing) ----
+        # ---- Validate (teacher forcing for logging) ----
         model.eval()
         val_losses = []
         with torch.no_grad():
@@ -446,15 +480,23 @@ def train_model(model, train_loader, val_loader, config):
                 val_losses.append(loss.item())
         val_loss = np.mean(val_losses)
 
+        # ---- Dream validation (for early stopping) ----
+        if epoch % DREAM_VAL_EVERY == 0 or epoch == 1:
+            d_err = dream_val_error(
+                model, val_seg_n, DREAM_VAL_STEPS, norm, device)
+        else:
+            d_err = history["dream_err"][-1] if history["dream_err"] else float("inf")
+
         current_lr = optimizer.param_groups[0]["lr"]
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
+        history["dream_err"].append(d_err)
         history["lr"].append(current_lr)
         history["ss_ratio"].append(ss_ratio)
-        scheduler.step(val_loss)
+        scheduler.step(d_err)  # schedule on dream error
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if d_err < best_dream_err:
+            best_dream_err = d_err
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             no_improve = 0
             marker = " *"
@@ -465,10 +507,12 @@ def train_model(model, train_loader, val_loader, config):
         if epoch % 10 == 0 or epoch == 1 or marker:
             print(f"  Epoch {epoch:3d}/{config['epochs']} | "
                   f"train={train_loss:.6f} | val={val_loss:.6f} | "
+                  f"dream={d_err:.2f}m | "
                   f"lr={current_lr:.1e} | ss={ss_ratio:.2f}{marker}")
 
         if no_improve >= config["patience"]:
-            print(f"  Early stopping at epoch {epoch}")
+            print(f"  Early stopping at epoch {epoch} "
+                  f"(best dream err={best_dream_err:.2f}m)")
             break
 
     model.load_state_dict(best_state)
@@ -504,7 +548,7 @@ def evaluate_dream(model, s_val_n, a_val_n, s_val_raw, norm, device, dream_steps
     dist_3d = np.sqrt(np.sum(errors ** 2, axis=1))
 
     print("\n" + "=" * 55)
-    print(f"Dream Rollout Evaluation ({T} steps = {T * 0.005:.1f}s)")
+    print(f"Dream Rollout Evaluation ({T} steps = {T * DT:.1f}s)")
     print("=" * 55)
     print(f"  3D MAE:        {np.mean(dist_3d):.4f} m")
     print(f"  3D Max Error:  {np.max(dist_3d):.4f} m")
@@ -513,8 +557,8 @@ def evaluate_dream(model, s_val_n, a_val_n, s_val_raw, norm, device, dream_steps
         print(f"  {name}: MAE={mae:.4f} m")
 
     # Also evaluate at specific horizons
-    for horizon_s in [0.1, 0.5, 1.0, 2.0, 5.0]:
-        h_steps = int(horizon_s / 0.005)
+    for horizon_s in [0.5, 1.0, 2.0, 5.0, 10.0]:
+        h_steps = int(horizon_s / DT)
         if h_steps <= T:
             d = dist_3d[h_steps - 1]
             print(f"  @{horizon_s:.1f}s (step {h_steps}): 3D error = {d:.4f} m")
@@ -598,7 +642,7 @@ def plot_dream_3d(pred_raw, gt_raw, out_dir: Path):
         name="Start",
     ))
     fig.update_layout(
-        title=f"WAM v2 Dream Rollout ({len(gt_raw)} steps = {len(gt_raw)*0.005:.1f}s)",
+        title=f"WAM v2 Dream Rollout ({len(gt_raw)} steps = {len(gt_raw)*DT:.1f}s)",
         scene=dict(
             xaxis_title="East (m)", yaxis_title="North (m)", zaxis_title="Up (m)",
             aspectmode="manual", aspectratio=dict(x=1, y=1, z=0.15),
@@ -639,7 +683,7 @@ def plot_dream_topdown(pred_raw, gt_raw, out_dir: Path):
 
 def plot_dream_error_over_time(dist_3d, out_dir: Path):
     """3D error accumulation over dream horizon."""
-    t = np.arange(len(dist_3d)) * 0.005  # seconds
+    t = np.arange(len(dist_3d)) * DT  # seconds
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=t, y=dist_3d, mode="lines",
                              name="3D Error", line=dict(color="purple", width=2)))
@@ -655,7 +699,7 @@ def plot_dream_error_over_time(dist_3d, out_dir: Path):
 
 def plot_state_comparison(pred_raw, gt_raw, out_dir: Path):
     """Compare all predicted state dimensions vs ground truth."""
-    t = np.arange(len(gt_raw)) * 0.005
+    t = np.arange(len(gt_raw)) * DT
     state_names = STATE_COLS
     n = len(state_names)
     fig = make_subplots(rows=n, cols=1, shared_xaxes=True,
@@ -747,9 +791,10 @@ def main():
     print("=" * 60)
 
     # 1) Load multi-lap data
-    print("\n[1/6] Loading multi-lap data...")
+    print(f"\n[1/6] Loading multi-lap data (downsample={DOWNSAMPLE}, "
+          f"dt={DT:.3f}s = {1/DT:.0f}Hz)...")
     train_segs, val_segs, val_raw_segs, norm = load_multi_lap_data(
-        RAW_DIR, TRAIN_RATIO)
+        RAW_DIR, TRAIN_RATIO, downsample=DOWNSAMPLE)
 
     train_ds = MultiLapSequenceDataset(train_segs, SEQ_LEN)
     val_ds = MultiLapSequenceDataset(val_segs, SEQ_LEN)
@@ -759,11 +804,14 @@ def main():
                             num_workers=2, pin_memory=True)
 
     print(f"  State dim: {STATE_DIM}, Action dim: {ACTION_DIM}")
-    print(f"  Seq len: {SEQ_LEN} ({SEQ_LEN * 0.005:.2f}s)")
+    print(f"  Seq len: {SEQ_LEN} ({SEQ_LEN * DT:.1f}s)")
     print(f"  Train sequences: {len(train_ds)}")
     print(f"  Val sequences: {len(val_ds)}")
     print(f"  Scheduled Sampling: epoch {SS_START_EPOCH}-{SS_END_EPOCH}, max={SS_MAX_RATIO}")
-    print(f"  Rollout loss: {ROLLOUT_STEPS} steps, weight={ROLLOUT_WEIGHT}")
+    print(f"  Rollout loss: {ROLLOUT_STEPS} steps ({ROLLOUT_STEPS*DT:.1f}s), "
+          f"weight={ROLLOUT_WEIGHT}")
+    print(f"  Dream val: {DREAM_VAL_STEPS} steps ({DREAM_VAL_STEPS*DT:.1f}s) "
+          f"every {DREAM_VAL_EVERY} epochs")
     print(f"  Device: {DEVICE}")
 
     # 2) Build model
@@ -773,13 +821,17 @@ def main():
     print(f"  Latent={LATENT_DIM}, Hidden={HIDDEN_DIM}, GRU layers={GRU_LAYERS}")
     print(f"  Parameters: {n_params:,}")
 
+    # Prepare val segment for dream-based early stopping
+    val_seg_n = val_segs[0]  # first lap's validation segment (normalized)
+
     # 3) Train
     print("\n[3/6] Training with scheduled sampling + rollout loss...")
     config = {
         "epochs": EPOCHS, "lr": LR, "weight_decay": WEIGHT_DECAY,
         "lr_patience": LR_PATIENCE, "patience": PATIENCE, "device": DEVICE,
     }
-    model, history = train_model(model, train_loader, val_loader, config)
+    model, history = train_model(
+        model, train_loader, val_loader, val_seg_n, norm, config)
 
     # Save model
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
