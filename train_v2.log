@@ -1,0 +1,37 @@
+nohup: ignoring input
+============================================================
+WAM v2 — World Action Model with Temporal Dynamics
+============================================================
+
+[1/6] Loading multi-lap data (downsample=10, dt=0.050s = 20Hz)...
+    Lap_0: 2231 pts (ds=10) -> train=1561, val=670
+    Lap_1: 2145 pts (ds=10) -> train=1501, val=644
+    skip VehicleDynamicsDataset_Nov2023_2023-11_10.csv (partial lap)
+    Lap_11: 2351 pts (ds=10) -> train=1645, val=706
+    Lap_2: 2129 pts (ds=10) -> train=1490, val=639
+    Lap_3: 2207 pts (ds=10) -> train=1544, val=663
+    Lap_4: 2225 pts (ds=10) -> train=1557, val=668
+    skip VehicleDynamicsDataset_Nov2023_2023-11_5.csv (partial lap)
+    Lap_6: 2701 pts (ds=10) -> train=1890, val=811
+    Lap_7: 2501 pts (ds=10) -> train=1750, val=751
+    Lap_8: 2221 pts (ds=10) -> train=1554, val=667
+    Lap_9: 2891 pts (ds=10) -> train=2023, val=868
+  Total: train=16515, val=7087 (10 laps)
+  State dim: 10, Action dim: 6
+  Seq len: 100 (5.0s)
+  Train sequences: 15515
+  Val sequences: 6087
+  Scheduled Sampling: epoch 5-150, max=0.5
+  Curriculum rollout: 5->60 steps (0.2s->3.0s), weight=0.3
+  Dream val: 200 steps (10.0s) every 10 epochs
+  No early stopping. Checkpoints every 50 epochs.
+  Device: cuda
+
+[2/6] Building Physics-Informed WAM v2...
+  Latent=128, Hidden=256, GRU layers=3
+  Physics prior: kinematic bicycle model (dt=0.05s)
+  Parameters: 403,018
+
+[3/6] Training with curriculum rollout + scheduled sampling...
+  Epoch   1/300 | train=0.082005 | val=0.062526 | dream=616.76m | rollout_k=5 | lr=3.0e-04 | ss=0.00 *
+  Epoch  10/300 | train=0.044687 | val=0.057740 | dream=84.67m | rollout_k=7 | lr=3.0e-04 | ss=0.02 *

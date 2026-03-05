@@ -87,25 +87,28 @@ LR = 3e-4
 WEIGHT_DECAY = 1e-5
 LATENT_DIM = 128
 HIDDEN_DIM = 256
-GRU_LAYERS = 2
+GRU_LAYERS = 3
 DROPOUT = 0.1
-PATIENCE = 40
-LR_PATIENCE = 12
+LR_PATIENCE = 20
 DREAM_STEPS = 400       # dream rollout length for evaluation (20s @ 20Hz)
 
 # Scheduled Sampling
 SS_START_EPOCH = 5
-SS_END_EPOCH = 100
+SS_END_EPOCH = 150
 SS_MAX_RATIO = 0.5
 
-# Multi-step rollout loss
-ROLLOUT_STEPS = 20      # K-step rollout (1.0s @ 20Hz)
+# Curriculum Learning: rollout steps grow during training
+ROLLOUT_MIN = 5         # start with 5-step rollout (0.25s)
+ROLLOUT_MAX = 60        # grow to 60-step rollout (3.0s)
+ROLLOUT_GROW_START = 1  # start growing at epoch 1
+ROLLOUT_GROW_END = 200  # reach max rollout by epoch 200
 ROLLOUT_WEIGHT = 0.3
 ROLLOUT_EVERY_N = 4
 
-# Dream validation for early stopping
-DREAM_VAL_STEPS = 100   # 5s dream for validation metric
-DREAM_VAL_EVERY = 5     # evaluate dream every N epochs
+# Dream validation (for monitoring, NOT early stopping)
+DREAM_VAL_STEPS = 200   # 10s dream for validation metric
+DREAM_VAL_EVERY = 10    # evaluate dream every N epochs
+SAVE_EVERY = 50         # save checkpoint every N epochs
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -135,22 +138,40 @@ class SequenceDataset(Dataset):
 
 class WAM(nn.Module):
     """
-    World Action Model v2
+    Physics-Informed World Action Model v2
 
     Architecture:
-      State Encoder:  state (10d) → latent (64d)
-      Action Encoder: action (6d) → latent (32d)
-      Dynamics:       GRU over concatenated latent (96d → 64d)
-      State Decoder:  latent (64d) → Δstate (10d)
-      Transition:     s_{t+1} = s_t + Δstate
+      State Encoder:  state (10d) → latent
+      Action Encoder: action (6d) → latent/2
+      Dynamics:       GRU over concatenated latent
+      State Decoder:  latent → Δstate (10d) correction
+      Transition:     s_{t+1} = s_t + physics_delta + nn_correction
+
+    Physics prior (computed in raw space, converted back to normalized):
+      ΔposE = (Vx·cos(yaw) - Vy·sin(yaw)) · dt
+      ΔposN = (Vx·sin(yaw) + Vy·cos(yaw)) · dt
+      ΔposU = 0
+      Δyaw  = yawRate · dt
     """
+
+    # State column indices
+    IDX_POSE, IDX_POSN, IDX_POSU = 0, 1, 2
+    IDX_VX, IDX_VY = 3, 4
+    IDX_YAW = 5
+    IDX_YAWRATE = 6
 
     def __init__(self, state_dim: int, action_dim: int,
                  latent_dim: int = 64, hidden_dim: int = 128,
-                 gru_layers: int = 2, dropout: float = 0.1):
+                 gru_layers: int = 2, dropout: float = 0.1,
+                 dt: float = 0.05):
         super().__init__()
         self.state_dim = state_dim
         self.latent_dim = latent_dim
+        self.dt = dt
+
+        # Normalization params (set via set_norm)
+        self.register_buffer("s_mean", torch.zeros(state_dim))
+        self.register_buffer("s_std", torch.ones(state_dim))
 
         # State encoder: compress state to latent space
         self.state_encoder = nn.Sequential(
@@ -178,7 +199,7 @@ class WAM(nn.Module):
             dropout=dropout if gru_layers > 1 else 0,
         )
 
-        # State decoder: latent → Δstate
+        # State decoder: latent → Δstate correction (small residual)
         self.state_decoder = nn.Sequential(
             nn.Linear(latent_dim, hidden_dim),
             nn.ReLU(),
@@ -186,21 +207,56 @@ class WAM(nn.Module):
             nn.Linear(hidden_dim, state_dim),
         )
 
+    def set_norm(self, s_mean, s_std):
+        """Set normalization parameters for physics computation."""
+        self.s_mean.copy_(torch.tensor(s_mean, dtype=torch.float32))
+        self.s_std.copy_(torch.tensor(s_std, dtype=torch.float32))
+
+    def _physics_delta_normalized(self, states_n):
+        """
+        Compute physics-based state delta in normalized space.
+        states_n: [..., state_dim] normalized states
+        Returns:  [..., state_dim] physics delta in normalized space
+        """
+        # Denormalize the relevant states
+        vx_raw = states_n[..., self.IDX_VX] * self.s_std[self.IDX_VX] + self.s_mean[self.IDX_VX]
+        vy_raw = states_n[..., self.IDX_VY] * self.s_std[self.IDX_VY] + self.s_mean[self.IDX_VY]
+        yaw_raw = states_n[..., self.IDX_YAW] * self.s_std[self.IDX_YAW] + self.s_mean[self.IDX_YAW]
+        yaw_rate_raw = states_n[..., self.IDX_YAWRATE] * self.s_std[self.IDX_YAWRATE] + self.s_mean[self.IDX_YAWRATE]
+
+        cos_yaw = torch.cos(yaw_raw)
+        sin_yaw = torch.sin(yaw_raw)
+
+        # Position deltas in raw space (kinematic bicycle model)
+        dE_raw = (vx_raw * cos_yaw - vy_raw * sin_yaw) * self.dt
+        dN_raw = (vx_raw * sin_yaw + vy_raw * cos_yaw) * self.dt
+        dYaw_raw = yaw_rate_raw * self.dt
+
+        # Convert back to normalized space
+        physics_delta = torch.zeros_like(states_n)
+        physics_delta[..., self.IDX_POSE] = dE_raw / self.s_std[self.IDX_POSE]
+        physics_delta[..., self.IDX_POSN] = dN_raw / self.s_std[self.IDX_POSN]
+        physics_delta[..., self.IDX_YAW] = dYaw_raw / self.s_std[self.IDX_YAW]
+
+        return physics_delta
+
     def forward(self, states, actions, hidden=None):
         """
         Teacher-forcing forward pass.
-        states:  [B, T, state_dim]  — ground truth states
+        states:  [B, T, state_dim]  — ground truth normalized states
         actions: [B, T, action_dim]
         Returns: predicted s_{t+1} [B, T, state_dim], hidden
         """
         z_s = self.state_encoder(states)         # [B, T, latent]
         z_a = self.action_encoder(actions)       # [B, T, latent//2]
-        z_in = torch.cat([z_s, z_a], dim=-1)     # [B, T, latent + latent//2]
+        z_in = torch.cat([z_s, z_a], dim=-1)
 
         z_out, hidden = self.gru(z_in, hidden)   # [B, T, latent]
 
-        delta = self.state_decoder(z_out)         # [B, T, state_dim]
-        next_states = states + delta              # residual: s_{t+1} = s_t + Δ
+        nn_correction = self.state_decoder(z_out) # [B, T, state_dim]
+        physics_delta = self._physics_delta_normalized(states)
+
+        next_states = states + physics_delta + nn_correction
 
         return next_states, hidden
 
@@ -226,10 +282,11 @@ class WAM(nn.Module):
             z_in = torch.cat([z_s, z_a], dim=-1)
 
             z_out, hidden = self.gru(z_in, hidden)
-            delta = self.state_decoder(z_out)
+            nn_correction = self.state_decoder(z_out)
+            physics_delta = self._physics_delta_normalized(s)
 
-            next_state = s + delta                     # [B, 1, state_dim]
-            state = next_state.squeeze(1)              # [B, state_dim]
+            next_state = s + physics_delta + nn_correction
+            state = next_state.squeeze(1)
             predictions.append(state)
 
         return torch.stack(predictions, dim=1)         # [B, T, state_dim]
@@ -416,15 +473,27 @@ def dream_val_error(model, val_seg_n, dream_steps, norm, device):
     return float(np.mean(dist_3d))
 
 
-def train_model(model, train_loader, val_loader, val_seg_n, norm, config):
-    """Train with scheduled sampling + multi-step rollout loss.
-    Early stopping uses dream rollout error instead of teacher-forcing loss."""
+def curriculum_rollout_steps(epoch):
+    """Linearly grow rollout steps from ROLLOUT_MIN to ROLLOUT_MAX."""
+    if epoch <= ROLLOUT_GROW_START:
+        return ROLLOUT_MIN
+    if epoch >= ROLLOUT_GROW_END:
+        return ROLLOUT_MAX
+    frac = (epoch - ROLLOUT_GROW_START) / (ROLLOUT_GROW_END - ROLLOUT_GROW_START)
+    return int(ROLLOUT_MIN + frac * (ROLLOUT_MAX - ROLLOUT_MIN))
+
+
+def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
+                model_dir=None):
+    """Train with scheduled sampling + curriculum rollout loss.
+    No early stopping — runs all epochs, saves best & periodic checkpoints."""
     device = config["device"]
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"],
                                   weight_decay=config["weight_decay"])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", patience=config["lr_patience"], factor=0.5)
+        optimizer, mode="min", patience=config["lr_patience"], factor=0.5,
+        min_lr=1e-6)
 
     # Position-weighted loss
     pos_weight = torch.ones(STATE_DIM, device=device)
@@ -432,13 +501,13 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config):
 
     best_dream_err = float("inf")
     best_state = None
-    no_improve = 0
     history = {"train_loss": [], "val_loss": [], "dream_err": [],
-               "lr": [], "ss_ratio": []}
+               "lr": [], "ss_ratio": [], "rollout_k": []}
 
     for epoch in range(1, config["epochs"] + 1):
         ss_ratio = scheduled_sampling_ratio(
             epoch, SS_START_EPOCH, SS_END_EPOCH, SS_MAX_RATIO)
+        rollout_k = curriculum_rollout_steps(epoch)
 
         # ---- Train ----
         model.train()
@@ -453,10 +522,10 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config):
             diff = (pred - s_next) ** 2 * pos_weight
             loss_tf = diff.mean()
 
-            # Multi-step rollout loss (every N batches to save time)
+            # Curriculum rollout loss (every N batches to save time)
             if batch_idx % ROLLOUT_EVERY_N == 0:
                 loss_rollout = compute_rollout_loss(
-                    model, s, a, s_next, ROLLOUT_STEPS, pos_weight, device)
+                    model, s, a, s_next, rollout_k, pos_weight, device)
                 loss = loss_tf + ROLLOUT_WEIGHT * loss_rollout
             else:
                 loss = loss_tf
@@ -480,7 +549,7 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config):
                 val_losses.append(loss.item())
         val_loss = np.mean(val_losses)
 
-        # ---- Dream validation (for early stopping) ----
+        # ---- Dream validation (for monitoring) ----
         if epoch % DREAM_VAL_EVERY == 0 or epoch == 1:
             d_err = dream_val_error(
                 model, val_seg_n, DREAM_VAL_STEPS, norm, device)
@@ -493,29 +562,42 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config):
         history["dream_err"].append(d_err)
         history["lr"].append(current_lr)
         history["ss_ratio"].append(ss_ratio)
-        scheduler.step(d_err)  # schedule on dream error
+        history["rollout_k"].append(rollout_k)
+        scheduler.step(val_loss)
 
+        # Save best model by dream error
+        marker = ""
         if d_err < best_dream_err:
             best_dream_err = d_err
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-            no_improve = 0
             marker = " *"
-        else:
-            no_improve += 1
-            marker = ""
+            if model_dir is not None:
+                torch.save(best_state, model_dir / "wam_v2_best_dream.pt")
+
+        # Periodic checkpoint
+        if model_dir is not None and epoch % SAVE_EVERY == 0:
+            torch.save({
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "history": history,
+            }, model_dir / f"wam_v2_ckpt_ep{epoch}.pt")
 
         if epoch % 10 == 0 or epoch == 1 or marker:
             print(f"  Epoch {epoch:3d}/{config['epochs']} | "
                   f"train={train_loss:.6f} | val={val_loss:.6f} | "
-                  f"dream={d_err:.2f}m | "
-                  f"lr={current_lr:.1e} | ss={ss_ratio:.2f}{marker}")
+                  f"dream={d_err:.2f}m | rollout_k={rollout_k} | "
+                  f"lr={current_lr:.1e} | ss={ss_ratio:.2f}{marker}",
+                  flush=True)
 
-        if no_improve >= config["patience"]:
-            print(f"  Early stopping at epoch {epoch} "
-                  f"(best dream err={best_dream_err:.2f}m)")
-            break
+        # # ---- Early stopping (DISABLED) ----
+        # if no_improve >= config["patience"]:
+        #     print(f"  Early stopping at epoch {epoch}")
+        #     break
 
-    model.load_state_dict(best_state)
+    # Load best model at the end
+    if best_state is not None:
+        model.load_state_dict(best_state)
     model = model.to(device)
     return model, history
 
@@ -786,6 +868,10 @@ def plot_action_intervention(model, s_val_n, a_val_n, norm, device, out_dir: Pat
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
+    # Force unbuffered stdout for nohup
+    import sys
+    sys.stdout.reconfigure(line_buffering=True)
+
     print("=" * 60)
     print("WAM v2 — World Action Model with Temporal Dynamics")
     print("=" * 60)
@@ -808,30 +894,36 @@ def main():
     print(f"  Train sequences: {len(train_ds)}")
     print(f"  Val sequences: {len(val_ds)}")
     print(f"  Scheduled Sampling: epoch {SS_START_EPOCH}-{SS_END_EPOCH}, max={SS_MAX_RATIO}")
-    print(f"  Rollout loss: {ROLLOUT_STEPS} steps ({ROLLOUT_STEPS*DT:.1f}s), "
-          f"weight={ROLLOUT_WEIGHT}")
+    print(f"  Curriculum rollout: {ROLLOUT_MIN}->{ROLLOUT_MAX} steps "
+          f"({ROLLOUT_MIN*DT:.1f}s->{ROLLOUT_MAX*DT:.1f}s), weight={ROLLOUT_WEIGHT}")
     print(f"  Dream val: {DREAM_VAL_STEPS} steps ({DREAM_VAL_STEPS*DT:.1f}s) "
           f"every {DREAM_VAL_EVERY} epochs")
+    print(f"  No early stopping. Checkpoints every {SAVE_EVERY} epochs.")
     print(f"  Device: {DEVICE}")
 
     # 2) Build model
-    print("\n[2/6] Building WAM v2 model...")
-    model = WAM(STATE_DIM, ACTION_DIM, LATENT_DIM, HIDDEN_DIM, GRU_LAYERS, DROPOUT)
+    print("\n[2/6] Building Physics-Informed WAM v2...")
+    model = WAM(STATE_DIM, ACTION_DIM, LATENT_DIM, HIDDEN_DIM, GRU_LAYERS,
+                DROPOUT, dt=DT)
+    model.set_norm(norm["s_mean"], norm["s_std"])
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  Latent={LATENT_DIM}, Hidden={HIDDEN_DIM}, GRU layers={GRU_LAYERS}")
+    print(f"  Physics prior: kinematic bicycle model (dt={DT}s)")
     print(f"  Parameters: {n_params:,}")
 
-    # Prepare val segment for dream-based early stopping
+    # Prepare val segment for dream monitoring
     val_seg_n = val_segs[0]  # first lap's validation segment (normalized)
 
     # 3) Train
-    print("\n[3/6] Training with scheduled sampling + rollout loss...")
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    print("\n[3/6] Training with curriculum rollout + scheduled sampling...")
     config = {
         "epochs": EPOCHS, "lr": LR, "weight_decay": WEIGHT_DECAY,
-        "lr_patience": LR_PATIENCE, "patience": PATIENCE, "device": DEVICE,
+        "lr_patience": LR_PATIENCE, "device": DEVICE,
     }
     model, history = train_model(
-        model, train_loader, val_loader, val_seg_n, norm, config)
+        model, train_loader, val_loader, val_seg_n, norm, config,
+        model_dir=MODEL_DIR)
 
     # Save model
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
