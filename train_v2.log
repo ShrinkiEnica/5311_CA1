@@ -35,3 +35,74 @@ WAM v2 — World Action Model with Temporal Dynamics
 [3/6] Training with curriculum rollout + scheduled sampling...
   Epoch   1/300 | train=0.082005 | val=0.062526 | dream=616.76m | rollout_k=5 | lr=3.0e-04 | ss=0.00 *
   Epoch  10/300 | train=0.044687 | val=0.057740 | dream=84.67m | rollout_k=7 | lr=3.0e-04 | ss=0.02 *
+  Epoch  20/300 | train=0.040201 | val=0.070685 | dream=37.27m | rollout_k=10 | lr=3.0e-04 | ss=0.05 *
+  Epoch  30/300 | train=0.030139 | val=0.102688 | dream=28.21m | rollout_k=13 | lr=1.5e-04 | ss=0.09 *
+  Epoch  40/300 | train=0.026435 | val=0.105364 | dream=32.35m | rollout_k=15 | lr=1.5e-04 | ss=0.12
+  Epoch  50/300 | train=0.024502 | val=0.102342 | dream=30.98m | rollout_k=18 | lr=7.5e-05 | ss=0.16
+  Epoch  60/300 | train=0.024374 | val=0.101782 | dream=17.64m | rollout_k=21 | lr=7.5e-05 | ss=0.19 *
+  Epoch  70/300 | train=0.024412 | val=0.100889 | dream=30.63m | rollout_k=24 | lr=7.5e-05 | ss=0.22
+  Epoch  80/300 | train=0.024826 | val=0.101528 | dream=16.78m | rollout_k=26 | lr=3.7e-05 | ss=0.26 *
+  Epoch  90/300 | train=0.025568 | val=0.100490 | dream=17.51m | rollout_k=29 | lr=3.7e-05 | ss=0.29
+  Epoch 100/300 | train=0.026468 | val=0.099194 | dream=26.53m | rollout_k=32 | lr=1.9e-05 | ss=0.33
+  Epoch 110/300 | train=0.027400 | val=0.099070 | dream=17.84m | rollout_k=35 | lr=1.9e-05 | ss=0.36
+  Epoch 120/300 | train=0.028461 | val=0.099581 | dream=20.68m | rollout_k=37 | lr=9.4e-06 | ss=0.40
+  Epoch 130/300 | train=0.029577 | val=0.099571 | dream=28.35m | rollout_k=40 | lr=9.4e-06 | ss=0.43
+  Epoch 140/300 | train=0.030774 | val=0.099291 | dream=22.75m | rollout_k=43 | lr=4.7e-06 | ss=0.47
+  Epoch 150/300 | train=0.031944 | val=0.099207 | dream=23.91m | rollout_k=46 | lr=4.7e-06 | ss=0.50
+  Epoch 160/300 | train=0.031873 | val=0.099103 | dream=24.17m | rollout_k=48 | lr=2.3e-06 | ss=0.50
+  Epoch 170/300 | train=0.031820 | val=0.099280 | dream=23.03m | rollout_k=51 | lr=2.3e-06 | ss=0.50
+  Epoch 180/300 | train=0.031909 | val=0.099273 | dream=26.73m | rollout_k=54 | lr=1.2e-06 | ss=0.50
+  Epoch 190/300 | train=0.031839 | val=0.099323 | dream=26.84m | rollout_k=57 | lr=1.2e-06 | ss=0.50
+  Epoch 200/300 | train=0.031903 | val=0.099393 | dream=28.11m | rollout_k=60 | lr=1.0e-06 | ss=0.50
+  Epoch 210/300 | train=0.031923 | val=0.099507 | dream=26.86m | rollout_k=60 | lr=1.0e-06 | ss=0.50
+  Epoch 220/300 | train=0.031799 | val=0.099468 | dream=26.83m | rollout_k=60 | lr=1.0e-06 | ss=0.50
+  Epoch 230/300 | train=0.031794 | val=0.099488 | dream=28.48m | rollout_k=60 | lr=1.0e-06 | ss=0.50
+  Epoch 240/300 | train=0.031762 | val=0.099464 | dream=28.94m | rollout_k=60 | lr=1.0e-06 | ss=0.50
+  Epoch 250/300 | train=0.031768 | val=0.099277 | dream=26.38m | rollout_k=60 | lr=1.0e-06 | ss=0.50
+  Epoch 260/300 | train=0.031717 | val=0.099362 | dream=31.03m | rollout_k=60 | lr=1.0e-06 | ss=0.50
+  Epoch 270/300 | train=0.031767 | val=0.099679 | dream=32.80m | rollout_k=60 | lr=1.0e-06 | ss=0.50
+  Epoch 280/300 | train=0.031718 | val=0.099669 | dream=32.99m | rollout_k=60 | lr=1.0e-06 | ss=0.50
+  Epoch 290/300 | train=0.031782 | val=0.099442 | dream=29.96m | rollout_k=60 | lr=1.0e-06 | ss=0.50
+  Epoch 300/300 | train=0.031666 | val=0.099648 | dream=30.46m | rollout_k=60 | lr=1.0e-06 | ss=0.50
+  Model saved to /home/shiyuqi/CascadeProjects/wam/autodrive/models/wam_v2_best.pt
+
+[4/6] Evaluating (teacher forcing, one-step)...
+
+=======================================================
+Teacher-Forcing One-Step Evaluation (669 steps)
+=======================================================
+  3D MAE:        1.552016 m
+  3D Max Error:  5.215343 m
+  posE: MAE=1.086122 m
+  posN: MAE=0.900548 m
+  posU: MAE=0.033773 m
+
+[5/6] Evaluating (dream rollout)...
+
+=======================================================
+Dream Rollout Evaluation (400 steps = 20.0s)
+=======================================================
+  3D MAE:        82.4006 m
+  3D Max Error:  235.1919 m
+  posE: MAE=32.5501 m
+  posN: MAE=73.7759 m
+  posU: MAE=0.7741 m
+  @0.5s (step 10): 3D error = 1.8468 m
+  @1.0s (step 20): 3D error = 5.5406 m
+  @2.0s (step 40): 3D error = 5.3490 m
+  @5.0s (step 100): 3D error = 15.2709 m
+  @10.0s (step 200): 3D error = 54.7747 m
+
+[6/6] Generating visualizations...
+  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_training_loss.html
+  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_dream_3d.html
+  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_dream_topdown.html
+  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_dream_error_vs_time.html
+  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_dream_states.html
+  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_action_intervention.html
+
+============================================================
+Done!
+  Model:          /home/shiyuqi/CascadeProjects/wam/autodrive/models/wam_v2_best.pt
+  Visualizations: /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_*.html
+============================================================

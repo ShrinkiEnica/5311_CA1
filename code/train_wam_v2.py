@@ -82,33 +82,37 @@ DT = 0.005 * DOWNSAMPLE # 0.05s per step
 TRAIN_RATIO = 0.7
 SEQ_LEN = 100           # training sequence length (5.0s @ 20Hz)
 BATCH_SIZE = 256
-EPOCHS = 300
+EPOCHS = 600
 LR = 3e-4
 WEIGHT_DECAY = 1e-5
 LATENT_DIM = 128
-HIDDEN_DIM = 256
+HIDDEN_DIM = 512
 GRU_LAYERS = 3
 DROPOUT = 0.1
-LR_PATIENCE = 20
+POS_WEIGHT_VAL = 10.0   # position loss weight (higher = focus on position)
 DREAM_STEPS = 400       # dream rollout length for evaluation (20s @ 20Hz)
 
 # Scheduled Sampling
 SS_START_EPOCH = 5
-SS_END_EPOCH = 150
+SS_END_EPOCH = 200
 SS_MAX_RATIO = 0.5
 
 # Curriculum Learning: rollout steps grow during training
 ROLLOUT_MIN = 5         # start with 5-step rollout (0.25s)
-ROLLOUT_MAX = 60        # grow to 60-step rollout (3.0s)
-ROLLOUT_GROW_START = 1  # start growing at epoch 1
-ROLLOUT_GROW_END = 200  # reach max rollout by epoch 200
+ROLLOUT_MAX = 80        # grow to 80-step rollout (4.0s)
+ROLLOUT_GROW_START = 1
+ROLLOUT_GROW_END = 300  # reach max rollout by epoch 300
 ROLLOUT_WEIGHT = 0.3
 ROLLOUT_EVERY_N = 4
 
 # Dream validation (for monitoring, NOT early stopping)
 DREAM_VAL_STEPS = 200   # 10s dream for validation metric
 DREAM_VAL_EVERY = 10    # evaluate dream every N epochs
-SAVE_EVERY = 50         # save checkpoint every N epochs
+SAVE_EVERY = 100        # save checkpoint every N epochs
+
+# Cosine annealing with warm restarts
+COSINE_T0 = 100         # first cycle length
+COSINE_TMULT = 2        # cycle length multiplier
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -138,46 +142,29 @@ class SequenceDataset(Dataset):
 
 class WAM(nn.Module):
     """
-    Physics-Informed World Action Model v2
+    World Action Model v2
 
     Architecture:
       State Encoder:  state (10d) → latent
       Action Encoder: action (6d) → latent/2
       Dynamics:       GRU over concatenated latent
-      State Decoder:  latent → Δstate (10d) correction
-      Transition:     s_{t+1} = s_t + physics_delta + nn_correction
-
-    Physics prior (computed in raw space, converted back to normalized):
-      ΔposE = (Vx·cos(yaw) - Vy·sin(yaw)) · dt
-      ΔposN = (Vx·sin(yaw) + Vy·cos(yaw)) · dt
-      ΔposU = 0
-      Δyaw  = yawRate · dt
+      State Decoder:  latent → Δstate (10d)
+      Transition:     s_{t+1} = s_t + Δstate
     """
-
-    # State column indices
-    IDX_POSE, IDX_POSN, IDX_POSU = 0, 1, 2
-    IDX_VX, IDX_VY = 3, 4
-    IDX_YAW = 5
-    IDX_YAWRATE = 6
 
     def __init__(self, state_dim: int, action_dim: int,
                  latent_dim: int = 64, hidden_dim: int = 128,
                  gru_layers: int = 2, dropout: float = 0.1,
-                 dt: float = 0.05):
+                 **kwargs):
         super().__init__()
         self.state_dim = state_dim
         self.latent_dim = latent_dim
-        self.dt = dt
 
-        # Normalization params (set via set_norm)
-        self.register_buffer("s_mean", torch.zeros(state_dim))
-        self.register_buffer("s_std", torch.ones(state_dim))
-
-        # State encoder: compress state to latent space
+        # State encoder
         self.state_encoder = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(hidden_dim, latent_dim),
         )
 
@@ -186,7 +173,7 @@ class WAM(nn.Module):
         self.action_encoder = nn.Sequential(
             nn.Linear(action_dim, hidden_dim // 2),
             nn.LayerNorm(hidden_dim // 2),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(hidden_dim // 2, action_latent),
         )
 
@@ -199,51 +186,28 @@ class WAM(nn.Module):
             dropout=dropout if gru_layers > 1 else 0,
         )
 
-        # State decoder: latent → Δstate correction (small residual)
-        self.state_decoder = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, state_dim),
-        )
+        # State decoder: latent → Δstate (two-layer with skip)
+        self.decoder_fc1 = nn.Linear(latent_dim, hidden_dim)
+        self.decoder_ln = nn.LayerNorm(hidden_dim)
+        self.decoder_fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.decoder_out = nn.Linear(hidden_dim, state_dim)
+        self.decoder_drop = nn.Dropout(dropout)
 
-    def set_norm(self, s_mean, s_std):
-        """Set normalization parameters for physics computation."""
-        self.s_mean.copy_(torch.tensor(s_mean, dtype=torch.float32))
-        self.s_std.copy_(torch.tensor(s_std, dtype=torch.float32))
+        # Small init for output layer → initial delta ≈ 0
+        nn.init.zeros_(self.decoder_out.bias)
+        nn.init.uniform_(self.decoder_out.weight, -0.001, 0.001)
 
-    def _physics_delta_normalized(self, states_n):
-        """
-        Compute physics-based state delta in normalized space.
-        states_n: [..., state_dim] normalized states
-        Returns:  [..., state_dim] physics delta in normalized space
-        """
-        # Denormalize the relevant states
-        vx_raw = states_n[..., self.IDX_VX] * self.s_std[self.IDX_VX] + self.s_mean[self.IDX_VX]
-        vy_raw = states_n[..., self.IDX_VY] * self.s_std[self.IDX_VY] + self.s_mean[self.IDX_VY]
-        yaw_raw = states_n[..., self.IDX_YAW] * self.s_std[self.IDX_YAW] + self.s_mean[self.IDX_YAW]
-        yaw_rate_raw = states_n[..., self.IDX_YAWRATE] * self.s_std[self.IDX_YAWRATE] + self.s_mean[self.IDX_YAWRATE]
-
-        cos_yaw = torch.cos(yaw_raw)
-        sin_yaw = torch.sin(yaw_raw)
-
-        # Position deltas in raw space (kinematic bicycle model)
-        dE_raw = (vx_raw * cos_yaw - vy_raw * sin_yaw) * self.dt
-        dN_raw = (vx_raw * sin_yaw + vy_raw * cos_yaw) * self.dt
-        dYaw_raw = yaw_rate_raw * self.dt
-
-        # Convert back to normalized space
-        physics_delta = torch.zeros_like(states_n)
-        physics_delta[..., self.IDX_POSE] = dE_raw / self.s_std[self.IDX_POSE]
-        physics_delta[..., self.IDX_POSN] = dN_raw / self.s_std[self.IDX_POSN]
-        physics_delta[..., self.IDX_YAW] = dYaw_raw / self.s_std[self.IDX_YAW]
-
-        return physics_delta
+    def _decode(self, z):
+        """Decode latent to Δstate with residual connection."""
+        h = self.decoder_ln(torch.nn.functional.gelu(self.decoder_fc1(z)))
+        h = h + torch.nn.functional.gelu(self.decoder_fc2(h))  # skip
+        h = self.decoder_drop(h)
+        return self.decoder_out(h)
 
     def forward(self, states, actions, hidden=None):
         """
         Teacher-forcing forward pass.
-        states:  [B, T, state_dim]  — ground truth normalized states
+        states:  [B, T, state_dim]  — ground truth states
         actions: [B, T, action_dim]
         Returns: predicted s_{t+1} [B, T, state_dim], hidden
         """
@@ -252,11 +216,8 @@ class WAM(nn.Module):
         z_in = torch.cat([z_s, z_a], dim=-1)
 
         z_out, hidden = self.gru(z_in, hidden)   # [B, T, latent]
-
-        nn_correction = self.state_decoder(z_out) # [B, T, state_dim]
-        physics_delta = self._physics_delta_normalized(states)
-
-        next_states = states + physics_delta + nn_correction
+        delta = self._decode(z_out)              # [B, T, state_dim]
+        next_states = states + delta
 
         return next_states, hidden
 
@@ -274,22 +235,20 @@ class WAM(nn.Module):
         state = init_state
 
         for t in range(T):
-            s = state.unsqueeze(1)                    # [B, 1, state_dim]
-            a = action_seq[:, t:t+1, :]               # [B, 1, action_dim]
+            s = state.unsqueeze(1)
+            a = action_seq[:, t:t+1, :]
 
             z_s = self.state_encoder(s)
             z_a = self.action_encoder(a)
             z_in = torch.cat([z_s, z_a], dim=-1)
 
             z_out, hidden = self.gru(z_in, hidden)
-            nn_correction = self.state_decoder(z_out)
-            physics_delta = self._physics_delta_normalized(s)
+            delta = self._decode(z_out)
 
-            next_state = s + physics_delta + nn_correction
-            state = next_state.squeeze(1)
+            state = (s + delta).squeeze(1)
             predictions.append(state)
 
-        return torch.stack(predictions, dim=1)         # [B, T, state_dim]
+        return torch.stack(predictions, dim=1)
 
 
 # ─── Data Loading ─────────────────────────────────────────────────────────────
