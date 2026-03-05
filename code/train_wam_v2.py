@@ -86,7 +86,7 @@ EPOCHS = 600
 LR = 3e-4
 WEIGHT_DECAY = 1e-5
 LATENT_DIM = 128
-HIDDEN_DIM = 512
+HIDDEN_DIM = 256
 GRU_LAYERS = 3
 DROPOUT = 0.1
 POS_WEIGHT_VAL = 10.0   # position loss weight (higher = focus on position)
@@ -106,7 +106,7 @@ ROLLOUT_WEIGHT = 0.3
 ROLLOUT_EVERY_N = 4
 
 # Dream validation (for monitoring, NOT early stopping)
-DREAM_VAL_STEPS = 200   # 10s dream for validation metric
+DREAM_VAL_STEPS = 400   # 20s dream for validation metric (match eval)
 DREAM_VAL_EVERY = 10    # evaluate dream every N epochs
 SAVE_EVERY = 100        # save checkpoint every N epochs
 
@@ -276,6 +276,9 @@ def load_multi_lap_data(raw_dir: Path, train_ratio: float, downsample: int = 1):
             df = df.iloc[::downsample].reset_index(drop=True)
         s = df[STATE_COLS].values.astype(np.float64)
         a = df[ACTION_COLS].values.astype(np.float64)
+        # Unwrap yaw angle to remove ±2π discontinuities
+        yaw_idx = STATE_COLS.index("yawAngle_rad")
+        s[:, yaw_idx] = np.unwrap(s[:, yaw_idx])
         n = len(df)
         split = int(n * train_ratio)
         train_segments.append((s[:split], a[:split]))
@@ -450,13 +453,12 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"],
                                   weight_decay=config["weight_decay"])
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", patience=config["lr_patience"], factor=0.5,
-        min_lr=1e-6)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=COSINE_T0, T_mult=COSINE_TMULT, eta_min=1e-6)
 
     # Position-weighted loss
     pos_weight = torch.ones(STATE_DIM, device=device)
-    pos_weight[POS_INDICES] = 5.0
+    pos_weight[POS_INDICES] = POS_WEIGHT_VAL
 
     best_dream_err = float("inf")
     best_state = None
@@ -522,7 +524,7 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
         history["lr"].append(current_lr)
         history["ss_ratio"].append(ss_ratio)
         history["rollout_k"].append(rollout_k)
-        scheduler.step(val_loss)
+        scheduler.step()
 
         # Save best model by dream error
         marker = ""
@@ -861,13 +863,10 @@ def main():
     print(f"  Device: {DEVICE}")
 
     # 2) Build model
-    print("\n[2/6] Building Physics-Informed WAM v2...")
-    model = WAM(STATE_DIM, ACTION_DIM, LATENT_DIM, HIDDEN_DIM, GRU_LAYERS,
-                DROPOUT, dt=DT)
-    model.set_norm(norm["s_mean"], norm["s_std"])
+    print("\n[2/6] Building WAM v2...")
+    model = WAM(STATE_DIM, ACTION_DIM, LATENT_DIM, HIDDEN_DIM, GRU_LAYERS, DROPOUT)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  Latent={LATENT_DIM}, Hidden={HIDDEN_DIM}, GRU layers={GRU_LAYERS}")
-    print(f"  Physics prior: kinematic bicycle model (dt={DT}s)")
     print(f"  Parameters: {n_params:,}")
 
     # Prepare val segment for dream monitoring
@@ -878,7 +877,7 @@ def main():
     print("\n[3/6] Training with curriculum rollout + scheduled sampling...")
     config = {
         "epochs": EPOCHS, "lr": LR, "weight_decay": WEIGHT_DECAY,
-        "lr_patience": LR_PATIENCE, "device": DEVICE,
+        "device": DEVICE,
     }
     model, history = train_model(
         model, train_loader, val_loader, val_seg_n, norm, config,
