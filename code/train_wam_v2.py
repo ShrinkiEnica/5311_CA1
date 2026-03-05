@@ -2,7 +2,7 @@
 WAM v2 — World Action Model with Temporal Dynamics
 
 升级要点:
-  1. State/Action 明确分离
+  1. 观测/输出 明确分离 (Encoder 仅接收动力学量, 不接收位置/速度)
   2. 隐空间编码 (Latent Space Encoder/Decoder)
   3. GRU 时序动力学模型
   4. 残差预测 (预测 Δstate 而非绝对值)
@@ -10,21 +10,27 @@ WAM v2 — World Action Model with Temporal Dynamics
   6. 多步 Rollout Loss
   7. 多圈数据训练 (10 圈, ~150K 样本)
   8. 动作干预可视化
+  9. 位置 + 速度 预测/可视化
 
-State (10 dim):
-  posE_m, posN_m, posU_m          — 位置 (3)
-  Vx_mps, Vy_mps                  — 车体速度 (2)
-  yawAngle_rad                    — 偏航角 (1)
-  yawRate_radps                   — 偏航角速度 (1)
-  axCG_mps2, ayCG_mps2            — 纵/横向加速度 (2)
-  slipAngle_rad                   — 侧滑角 (1)
+Full State (10 dim) — 残差传递:
+  posE_m, posN_m, posU_m          — 位置 (3)       [OUTPUT]
+  Vx_mps, Vy_mps                  — 车体速度 (2)   [OUTPUT]
+  yawAngle_rad                    — 偏航角 (1)     [INPUT/OUTPUT]
+  yawRate_radps                   — 偏航角速度 (1) [INPUT]
+  axCG_mps2, ayCG_mps2            — 纵/横向加速度 (2) [INPUT]
+  slipAngle_rad                   — 侧滑角 (1)     [INPUT]
+
+Observation (5 dim) — Encoder 输入 (不含位置/速度):
+  yawAngle_rad, yawRate_radps, axCG_mps2, ayCG_mps2, slipAngle_rad
+
+Prediction Output — 位置 (3) + 速度 (2), 给出预测 vs 实际可视化
 
 Action (6 dim):
   roadWheelAngle_rad              — 转向角 (1)
   throttleCmd_percent             — 油门指令 (1)
   brakeCmd_fl/fr/rl/rr_bar        — 四轮制动指令 (4)
 
-Transition:  s_{t+1} = s_t + f(s_t, a_t, h_t)
+Transition:  s_{t+1} = s_t + f(obs_t, a_t, h_t)
 Dream:       给定初始状态 + 动作序列, 自回归推演未来轨迹
 
 用法:
@@ -53,14 +59,18 @@ EXCLUDE_LAPS = {"_5", "_10"}
 # ─── Feature Definitions ─────────────────────────────────────────────────────
 
 STATE_COLS = [
-    "posE_m", "posN_m", "posU_m",       # position (3)
-    "Vx_mps", "Vy_mps",                 # body velocity (2)
-    "yawAngle_rad",                      # heading (1)
-    "yawRate_radps",                     # yaw rate (1)
-    "axCG_mps2", "ayCG_mps2",           # acceleration (2)
-    "slipAngle_rad",                     # side slip (1)
+    "posE_m", "posN_m", "posU_m",       # position (3)        [0,1,2]
+    "Vx_mps", "Vy_mps",                 # body velocity (2)   [3,4]
+    "yawAngle_rad",                      # heading (1)         [5]
+    "yawRate_radps",                     # yaw rate (1)        [6]
+    "rollRate_radps",                    # roll rate (1)       [7]
+    "pitchRate_radps",                   # pitch rate (1)      [8]
+    "axCG_mps2", "ayCG_mps2", "azCG_mps2",  # acceleration (3) [9,10,11]
+    "slipAngle_rad",                     # side slip (1)       [12]
+    "wheelspeed_fl", "wheelspeed_fr",    # wheel speed FL/FR   [13,14]
+    "wheelspeed_rl", "wheelspeed_rr",    # wheel speed RL/RR   [15,16]
 ]
-STATE_DIM = len(STATE_COLS)  # 10
+STATE_DIM = len(STATE_COLS)  # 17
 
 ACTION_COLS = [
     "roadWheelAngle_rad",               # steering (1)
@@ -73,6 +83,9 @@ ACTION_COLS = [
 ACTION_DIM = len(ACTION_COLS)  # 6
 
 POS_INDICES = [0, 1, 2]  # position indices in state vector
+VEL_INDICES = [3, 4]     # velocity indices in state vector
+OBS_INDICES = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]  # yaw, rates, accel, slip, wheelspeed
+OBS_DIM = len(OBS_INDICES)  # 12
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -82,14 +95,18 @@ DT = 0.005 * DOWNSAMPLE # 0.05s per step
 TRAIN_RATIO = 0.7
 SEQ_LEN = 100           # training sequence length (5.0s @ 20Hz)
 BATCH_SIZE = 256
-EPOCHS = 600
+EPOCHS = 300
 LR = 3e-4
 WEIGHT_DECAY = 1e-5
-LATENT_DIM = 128
-HIDDEN_DIM = 256
-GRU_LAYERS = 3
+D_MODEL = 128           # transformer model dimension
+HIDDEN_DIM = 256        # decoder hidden dimension
+TF_NHEAD = 4            # attention heads
+TF_LAYERS = 4           # transformer encoder layers
+TF_DIM_FF = 512         # feedforward dimension
+MAX_SEQ_LEN = 500       # max positional encoding length
 DROPOUT = 0.1
-POS_WEIGHT_VAL = 10.0   # position loss weight (higher = focus on position)
+POS_WEIGHT_VAL = 10.0   # position loss weight
+VEL_WEIGHT_VAL = 5.0    # velocity loss weight
 DREAM_STEPS = 400       # dream rollout length for evaluation (20s @ 20Hz)
 
 # Scheduled Sampling
@@ -142,52 +159,61 @@ class SequenceDataset(Dataset):
 
 class WAM(nn.Module):
     """
-    World Action Model v2
+    World Action Model v2 — Causal Transformer Architecture
 
     Architecture:
-      State Encoder:  state (10d) → latent
-      Action Encoder: action (6d) → latent/2
-      Dynamics:       GRU over concatenated latent
-      State Decoder:  latent → Δstate (10d)
+      Obs Encoder:    obs (12d) → d_model
+      Action Encoder: action (6d) → d_model
+      Positional Enc: learnable position embeddings
+      Temporal:       Causal Transformer Encoder (self-attention)
+      State Decoder:  d_model → Δstate (17d)
       Transition:     s_{t+1} = s_t + Δstate
+
+    Encoder does NOT receive position or velocity.
+    Position and velocity are predicted as outputs via residual delta.
     """
 
     def __init__(self, state_dim: int, action_dim: int,
-                 latent_dim: int = 64, hidden_dim: int = 128,
-                 gru_layers: int = 2, dropout: float = 0.1,
-                 **kwargs):
+                 obs_dim: int = 12,
+                 d_model: int = 128, nhead: int = 4,
+                 num_layers: int = 4, dim_ff: int = 512,
+                 hidden_dim: int = 256, dropout: float = 0.1,
+                 max_seq_len: int = 500, **kwargs):
         super().__init__()
         self.state_dim = state_dim
-        self.latent_dim = latent_dim
+        self.obs_dim = obs_dim
+        self.d_model = d_model
 
-        # State encoder
-        self.state_encoder = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+        # Observation encoder (dynamics only: no pos/vel)
+        self.obs_encoder = nn.Sequential(
+            nn.Linear(obs_dim, d_model),
+            nn.LayerNorm(d_model),
             nn.GELU(),
-            nn.Linear(hidden_dim, latent_dim),
         )
 
         # Action encoder
-        action_latent = latent_dim // 2
         self.action_encoder = nn.Sequential(
-            nn.Linear(action_dim, hidden_dim // 2),
-            nn.LayerNorm(hidden_dim // 2),
+            nn.Linear(action_dim, d_model),
+            nn.LayerNorm(d_model),
             nn.GELU(),
-            nn.Linear(hidden_dim // 2, action_latent),
         )
 
-        # GRU dynamics in latent space
-        self.gru = nn.GRU(
-            input_size=latent_dim + action_latent,
-            hidden_size=latent_dim,
-            num_layers=gru_layers,
-            batch_first=True,
-            dropout=dropout if gru_layers > 1 else 0,
+        # Learnable positional encoding
+        self.pos_enc = nn.Embedding(max_seq_len, d_model)
+
+        # Causal Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=dim_ff,
+            dropout=dropout, activation='gelu', batch_first=True,
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_layers,
+            enable_nested_tensor=False,
         )
 
-        # State decoder: latent → Δstate (two-layer with skip)
-        self.decoder_fc1 = nn.Linear(latent_dim, hidden_dim)
+        # State decoder: d_model → Δstate (two-layer with skip)
+        self.decoder_fc1 = nn.Linear(d_model, hidden_dim)
         self.decoder_ln = nn.LayerNorm(hidden_dim)
         self.decoder_fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.decoder_out = nn.Linear(hidden_dim, state_dim)
@@ -204,22 +230,59 @@ class WAM(nn.Module):
         h = self.decoder_drop(h)
         return self.decoder_out(h)
 
+    def _causal_mask(self, T, device):
+        """Generate causal attention mask (upper triangular -inf)."""
+        return nn.Transformer.generate_square_subsequent_mask(T, device=device)
+
+    def _encode_step(self, state, action, t):
+        """Encode a single (state, action) pair at position t → [B, 1, d_model]."""
+        obs = state.unsqueeze(1)[..., OBS_INDICES]    # [B, 1, obs_dim]
+        z_obs = self.obs_encoder(obs)                  # [B, 1, d_model]
+        z_act = self.action_encoder(action.unsqueeze(1))  # [B, 1, d_model]
+        z_pos = self.pos_enc(torch.tensor([t], device=state.device))  # [1, d_model]
+        return z_obs + z_act + z_pos
+
     def forward(self, states, actions, hidden=None):
         """
-        Teacher-forcing forward pass.
-        states:  [B, T, state_dim]  — ground truth states
+        Teacher-forcing forward pass (efficient parallel with causal mask).
+        states:  [B, T, state_dim]  — ground truth full states
         actions: [B, T, action_dim]
-        Returns: predicted s_{t+1} [B, T, state_dim], hidden
+        Returns: predicted s_{t+1} [B, T, state_dim], None
         """
-        z_s = self.state_encoder(states)         # [B, T, latent]
-        z_a = self.action_encoder(actions)       # [B, T, latent//2]
-        z_in = torch.cat([z_s, z_a], dim=-1)
+        obs = states[..., OBS_INDICES]                # [B, T, obs_dim]
+        z_obs = self.obs_encoder(obs)                 # [B, T, d_model]
+        z_act = self.action_encoder(actions)          # [B, T, d_model]
+        B, T, _ = z_obs.shape
+        positions = torch.arange(T, device=z_obs.device)
+        z_pos = self.pos_enc(positions)               # [T, d_model]
+        tokens = z_obs + z_act + z_pos                # [B, T, d_model]
 
-        z_out, hidden = self.gru(z_in, hidden)   # [B, T, latent]
-        delta = self._decode(z_out)              # [B, T, state_dim]
+        mask = self._causal_mask(T, tokens.device)
+        z_out = self.transformer(tokens, mask=mask, is_causal=True)
+        delta = self._decode(z_out)                   # [B, T, state_dim]
         next_states = states + delta
 
-        return next_states, hidden
+        return next_states, None
+
+    def step(self, state, action, past_tokens, t):
+        """
+        Single autoregressive step (for dream and rollout).
+        state:       [B, state_dim]
+        action:      [B, action_dim]
+        past_tokens: list of [B, 1, d_model] tensors (context)
+        t:           time step index
+        Returns:     next_state [B, state_dim], updated past_tokens
+        """
+        token = self._encode_step(state, action, t)
+        past_tokens.append(token)
+
+        tokens = torch.cat(past_tokens, dim=1)        # [B, t+1, d_model]
+        mask = self._causal_mask(tokens.size(1), tokens.device)
+        z_out = self.transformer(tokens, mask=mask, is_causal=True)
+
+        delta = self._decode(z_out[:, -1:, :])        # [B, 1, state_dim]
+        next_state = state + delta.squeeze(1)          # [B, state_dim]
+        return next_state, past_tokens
 
     @torch.no_grad()
     def dream(self, init_state, action_seq, hidden=None):
@@ -233,19 +296,11 @@ class WAM(nn.Module):
         B, T, _ = action_seq.shape
         predictions = []
         state = init_state
+        past_tokens = []
 
         for t in range(T):
-            s = state.unsqueeze(1)
-            a = action_seq[:, t:t+1, :]
-
-            z_s = self.state_encoder(s)
-            z_a = self.action_encoder(a)
-            z_in = torch.cat([z_s, z_a], dim=-1)
-
-            z_out, hidden = self.gru(z_in, hidden)
-            delta = self._decode(z_out)
-
-            state = (s + delta).squeeze(1)
+            state, past_tokens = self.step(
+                state, action_seq[:, t, :], past_tokens, t)
             predictions.append(state)
 
         return torch.stack(predictions, dim=1)
@@ -351,38 +406,35 @@ def scheduled_sampling_ratio(epoch, start_epoch, end_epoch, max_ratio):
 
 def forward_with_scheduled_sampling(model, states, actions, s_next_gt, ss_ratio, device):
     """
-    Forward pass with scheduled sampling.
-    With probability ss_ratio, use model's own prediction as next input
-    instead of ground truth.
+    Forward pass with scheduled sampling (Transformer-efficient 2-pass).
+    1) Teacher-forcing forward to get predictions.
+    2) Build mixed input where some states are replaced with predictions.
+    3) Second forward on mixed input.
     """
     B, T, sd = states.shape
     if ss_ratio <= 0.0:
         # Pure teacher forcing
         return model(states, actions)
 
-    # Step-by-step with scheduled sampling
-    predictions = []
-    hidden = None
-    current_state = states[:, 0:1, :]  # [B, 1, sd]
+    # Pass 1: teacher-forcing to get all predictions
+    with torch.no_grad():
+        pred_tf, _ = model(states, actions)  # [B, T, sd]
 
-    for t in range(T):
-        a_t = actions[:, t:t+1, :]  # [B, 1, ad]
-        pred_t, hidden = model(current_state, a_t, hidden)
-        predictions.append(pred_t.squeeze(1))  # [B, sd]
+    # Build mixed input: for timestep t, possibly use pred from t-1
+    mixed_states = states.clone()
+    for t in range(1, T):
+        use_pred = (torch.rand(B, 1, device=device) < ss_ratio).float()
+        mixed_states[:, t] = use_pred * pred_tf[:, t-1].detach() + \
+                             (1 - use_pred) * states[:, t]
 
-        if t < T - 1:
-            # Decide: use GT or own prediction for next step
-            use_pred = (torch.rand(B, 1, 1, device=device) < ss_ratio).float()
-            gt_next = states[:, t+1:t+2, :]  # [B, 1, sd]
-            current_state = use_pred * pred_t.detach() + (1 - use_pred) * gt_next
-
-    return torch.stack(predictions, dim=1), hidden  # [B, T, sd]
+    # Pass 2: forward on mixed inputs
+    return model(mixed_states, actions)
 
 
 def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, pos_weight, device):
     """
-    Compute multi-step rollout loss: unroll for K steps autoregressively
-    and accumulate position prediction error.
+    Compute multi-step rollout loss using model.step() with growing context.
+    Detaches old context tokens to save memory.
     """
     B, T, sd = states.shape
     K = min(rollout_steps, T)
@@ -394,21 +446,21 @@ def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, pos_w
     start_idx = torch.randint(0, max_start, (1,)).item()
 
     state = states[:, start_idx, :]  # [B, sd]
-    hidden = None
+    past_tokens = []
     rollout_loss = torch.tensor(0.0, device=device)
 
     for k in range(K):
         t = start_idx + k
-        s_in = state.unsqueeze(1)
-        a_in = actions[:, t:t+1, :]
-        pred, hidden = model(s_in, a_in, hidden)
-        pred = pred.squeeze(1)  # [B, sd]
+        pred, past_tokens = model.step(
+            state, actions[:, t, :], past_tokens, k)
 
         target = s_next_gt[:, t, :]  # [B, sd]
         diff = (pred - target) ** 2 * pos_weight
         rollout_loss = rollout_loss + diff.mean()
 
-        state = pred  # use own prediction (autoregressive)
+        # Detach old tokens to limit memory; keep gradient through state
+        past_tokens = [pt.detach() for pt in past_tokens]
+        state = pred  # gradient flows through state → next step
 
     return rollout_loss / K
 
@@ -456,9 +508,10 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer, T_0=COSINE_T0, T_mult=COSINE_TMULT, eta_min=1e-6)
 
-    # Position-weighted loss
+    # Position + velocity weighted loss
     pos_weight = torch.ones(STATE_DIM, device=device)
     pos_weight[POS_INDICES] = POS_WEIGHT_VAL
+    pos_weight[VEL_INDICES] = VEL_WEIGHT_VAL
 
     best_dream_err = float("inf")
     best_state = None
@@ -590,6 +643,12 @@ def evaluate_dream(model, s_val_n, a_val_n, s_val_raw, norm, device, dream_steps
     errors = pos_pred - pos_gt
     dist_3d = np.sqrt(np.sum(errors ** 2, axis=1))
 
+    # Velocity errors
+    vel_pred = pred_raw[:, VEL_INDICES]
+    vel_gt = gt_raw[:, VEL_INDICES]
+    vel_errors = vel_pred - vel_gt
+    speed_err = np.sqrt(np.sum(vel_errors ** 2, axis=1))
+
     print("\n" + "=" * 55)
     print(f"Dream Rollout Evaluation ({T} steps = {T * DT:.1f}s)")
     print("=" * 55)
@@ -598,13 +657,19 @@ def evaluate_dream(model, s_val_n, a_val_n, s_val_raw, norm, device, dream_steps
     for i, name in enumerate(["posE", "posN", "posU"]):
         mae = np.mean(np.abs(errors[:, i]))
         print(f"  {name}: MAE={mae:.4f} m")
+    print(f"  --- Velocity ---")
+    print(f"  Speed MAE:     {np.mean(speed_err):.4f} m/s")
+    for i, name in enumerate(["Vx", "Vy"]):
+        mae = np.mean(np.abs(vel_errors[:, i]))
+        print(f"  {name}: MAE={mae:.4f} m/s")
 
     # Also evaluate at specific horizons
     for horizon_s in [0.5, 1.0, 2.0, 5.0, 10.0]:
         h_steps = int(horizon_s / DT)
         if h_steps <= T:
             d = dist_3d[h_steps - 1]
-            print(f"  @{horizon_s:.1f}s (step {h_steps}): 3D error = {d:.4f} m")
+            v = speed_err[h_steps - 1]
+            print(f"  @{horizon_s:.1f}s (step {h_steps}): 3D={d:.4f}m, Speed={v:.4f}m/s")
 
     return pred_raw, gt_raw, errors, dist_3d
 
@@ -765,6 +830,40 @@ def plot_state_comparison(pred_raw, gt_raw, out_dir: Path):
     print(f"  saved {out}")
 
 
+def plot_dream_velocity(pred_raw, gt_raw, out_dir: Path):
+    """Compare predicted vs actual velocity (Vx, Vy) during dream rollout."""
+    t = np.arange(len(gt_raw)) * DT
+    vel_names = ["Vx_mps", "Vy_mps"]
+
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
+                        subplot_titles=["Vx (m/s)", "Vy (m/s)", "Speed Error (m/s)"],
+                        vertical_spacing=0.08)
+
+    for i, vi in enumerate(VEL_INDICES):
+        row = i + 1
+        fig.add_trace(go.Scatter(x=t, y=gt_raw[:, vi], name=f"GT {vel_names[i]}",
+                                 line=dict(color="blue", width=1.5),
+                                 showlegend=(i == 0)), row=row, col=1)
+        fig.add_trace(go.Scatter(x=t, y=pred_raw[:, vi], name=f"Pred {vel_names[i]}",
+                                 line=dict(color="red", width=1.5, dash="dash"),
+                                 showlegend=(i == 0)), row=row, col=1)
+
+    # Speed error over time
+    vel_err = pred_raw[:, VEL_INDICES] - gt_raw[:, VEL_INDICES]
+    speed_err = np.sqrt(np.sum(vel_err ** 2, axis=1))
+    fig.add_trace(go.Scatter(x=t, y=speed_err, name="Speed Error",
+                             line=dict(color="purple", width=1.5),
+                             showlegend=False), row=3, col=1)
+
+    fig.update_layout(
+        title="WAM v2 Dream: Velocity Prediction vs Ground Truth",
+        height=700, width=1100,
+    )
+    out = out_dir / "wam_v2_dream_velocity.html"
+    fig.write_html(str(out), include_plotlyjs="cdn")
+    print(f"  saved {out}")
+
+
 def plot_action_intervention(model, s_val_n, a_val_n, norm, device, out_dir: Path):
     """
     动作干预实验: 从相同初始状态出发, 分别使用
@@ -850,7 +949,7 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False,
                             num_workers=2, pin_memory=True)
 
-    print(f"  State dim: {STATE_DIM}, Action dim: {ACTION_DIM}")
+    print(f"  State dim: {STATE_DIM}, Obs dim: {OBS_DIM}, Action dim: {ACTION_DIM}")
     print(f"  Seq len: {SEQ_LEN} ({SEQ_LEN * DT:.1f}s)")
     print(f"  Train sequences: {len(train_ds)}")
     print(f"  Val sequences: {len(val_ds)}")
@@ -864,9 +963,14 @@ def main():
 
     # 2) Build model
     print("\n[2/6] Building WAM v2...")
-    model = WAM(STATE_DIM, ACTION_DIM, LATENT_DIM, HIDDEN_DIM, GRU_LAYERS, DROPOUT)
+    model = WAM(STATE_DIM, ACTION_DIM, obs_dim=OBS_DIM,
+                d_model=D_MODEL, nhead=TF_NHEAD, num_layers=TF_LAYERS,
+                dim_ff=TF_DIM_FF, hidden_dim=HIDDEN_DIM, dropout=DROPOUT,
+                max_seq_len=MAX_SEQ_LEN)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"  Latent={LATENT_DIM}, Hidden={HIDDEN_DIM}, GRU layers={GRU_LAYERS}")
+    print(f"  Obs encoder input: {OBS_DIM}d (no pos/vel)")
+    print(f"  Transformer: d_model={D_MODEL}, heads={TF_NHEAD}, layers={TF_LAYERS}, ff={TF_DIM_FF}")
+    print(f"  Decoder hidden: {HIDDEN_DIM}")
     print(f"  Parameters: {n_params:,}")
 
     # Prepare val segment for dream monitoring
@@ -892,9 +996,13 @@ def main():
                  for k, v in norm.items()},
         "config": {
             "state_dim": STATE_DIM, "action_dim": ACTION_DIM,
-            "latent_dim": LATENT_DIM, "hidden_dim": HIDDEN_DIM,
-            "gru_layers": GRU_LAYERS, "dropout": DROPOUT,
+            "obs_dim": OBS_DIM,
+            "d_model": D_MODEL, "nhead": TF_NHEAD,
+            "num_layers": TF_LAYERS, "dim_ff": TF_DIM_FF,
+            "hidden_dim": HIDDEN_DIM, "dropout": DROPOUT,
+            "max_seq_len": MAX_SEQ_LEN,
             "state_cols": STATE_COLS, "action_cols": ACTION_COLS,
+            "obs_indices": OBS_INDICES,
         },
     }, model_path)
     print(f"  Model saved to {model_path}")
@@ -921,6 +1029,7 @@ def main():
     plot_dream_topdown(pred_raw, gt_raw, VIS_DIR)
     plot_dream_error_over_time(dist_3d, VIS_DIR)
     plot_state_comparison(pred_raw, gt_raw, VIS_DIR)
+    plot_dream_velocity(pred_raw, gt_raw, VIS_DIR)
     plot_action_intervention(model, s_val_n, a_val_n, norm, DEVICE, VIS_DIR)
 
     print("\n" + "=" * 60)
