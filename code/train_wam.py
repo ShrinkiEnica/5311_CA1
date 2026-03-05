@@ -26,7 +26,7 @@ from plotly.subplots import make_subplots
 ROOT = Path(__file__).resolve().parent.parent
 DATA_FILE = ROOT / "data" / "raw_data" / "VehicleDynamicsDataset_Nov2023_2023-11.csv"
 MODEL_DIR = ROOT / "models"
-VIS_DIR = ROOT / "visualization" / "raw"
+VIS_DIR = ROOT / "visualization" / "wam_v1"
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 

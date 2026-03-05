@@ -45,7 +45,7 @@ from plotly.subplots import make_subplots
 ROOT = Path(__file__).resolve().parent.parent
 RAW_DIR = ROOT / "data" / "raw_data"
 MODEL_DIR = ROOT / "models"
-VIS_DIR = ROOT / "visualization" / "raw"
+VIS_DIR = ROOT / "visualization" / "wam_v2"
 
 # Laps to exclude (partial data)
 EXCLUDE_LAPS = {"_5", "_10"}
