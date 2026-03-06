@@ -17,7 +17,7 @@ WAM v2 — World Action Model with Temporal Dynamics
     Lap_8: 2221 pts (ds=10) -> train=1554, val=667
     Lap_9: 2891 pts (ds=10) -> train=2023, val=868
   Total: train=16515, val=7087 (10 laps)
-  State dim: 17, Obs dim: 17, Action dim: 6
+  State dim: 17, Obs dim: 15, Action dim: 6
   Seq len: 100 (5.0s)
   Train sequences: 15515
   Val sequences: 6087
@@ -28,21 +28,10 @@ WAM v2 — World Action Model with Temporal Dynamics
   Device: cuda
 
 [2/6] Building WAM v2...
-  Obs encoder input: 17d (full state)
+  Obs encoder input: 15d (full state)
   SSM: d_model=128, layers=4, state_dim=128
   Decoder hidden: 256
-  Parameters: 373,649
+  Parameters: 372,622
 
 [3/6] Training with curriculum rollout + scheduled sampling...
-  Epoch   1/300 | train=0.188958 | val=0.149584 | dream=403.60m | rollout_k=5 | lr=2.8e-04 | ss=0.00 *
-  Epoch  10/300 | train=0.130483 | val=0.156320 | dream=192.22m | rollout_k=7 | lr=3.0e-04 | ss=0.01 *
-  Epoch  20/300 | train=0.117210 | val=0.172361 | dream=191.97m | rollout_k=9 | lr=2.8e-04 | ss=0.04 *
-  Epoch  30/300 | train=0.106021 | val=0.190244 | dream=191.57m | rollout_k=12 | lr=2.5e-04 | ss=0.06 *
-  Epoch  40/300 | train=0.094595 | val=0.211256 | dream=135.72m | rollout_k=14 | lr=2.1e-04 | ss=0.09 *
-  Epoch  50/300 | train=0.085594 | val=0.221803 | dream=151.30m | rollout_k=17 | lr=1.6e-04 | ss=0.12
-  Epoch  60/300 | train=0.077961 | val=0.225233 | dream=142.39m | rollout_k=19 | lr=1.1e-04 | ss=0.14
-  Epoch  70/300 | train=0.072612 | val=0.225801 | dream=148.49m | rollout_k=22 | lr=6.6e-05 | ss=0.17
-  Epoch  80/300 | train=0.068327 | val=0.228056 | dream=144.77m | rollout_k=24 | lr=3.1e-05 | ss=0.19
-  Epoch  90/300 | train=0.065280 | val=0.225705 | dream=137.33m | rollout_k=27 | lr=7.9e-06 | ss=0.22
-  Epoch 100/300 | train=0.062388 | val=0.224960 | dream=141.61m | rollout_k=29 | lr=0.0e+00 | ss=0.24
-  Epoch 110/300 | train=0.060407 | val=0.224159 | dream=140.59m | rollout_k=32 | lr=7.9e-06 | ss=0.27
+  Epoch   1/300 | train=0.249436 | val=0.211638 | dream=87.13m | rollout_k=5 | lr=2.8e-04 | ss=0.00 *

@@ -180,22 +180,33 @@ class SSMBlock(nn.Module):
         B, T, _ = x.shape
         if h is None:
             h = x.new_zeros(B, self.log_a.shape[0])
-        a = torch.exp(-torch.exp(self.log_a)).view(1, -1)
-        b = torch.sigmoid(self.b).view(1, -1)
-        outputs = []
-        for t in range(T):
-            x_t = self.norm(x[:, t, :])
-            u = self.in_proj(x_t)
-            gate = torch.sigmoid(self.gate_proj(x_t))
-            h = a * h + b * u
-            y = self.out_proj(torch.tanh(h))
-            y = self.dropout(y) * gate
-            outputs.append((self.residual(x[:, t, :]) + y).unsqueeze(1))
-        return torch.cat(outputs, dim=1), h
+        x_norm = self.norm(x)
+        u = self.in_proj(x_norm)
+        gate = torch.sigmoid(self.gate_proj(x_norm))
+
+        a = torch.exp(-torch.exp(self.log_a))
+        b = torch.sigmoid(self.b)
+
+        time = torch.arange(T, device=x.device, dtype=x.dtype)
+        dt = (time[:, None] - time[None, :]).clamp(min=0)
+        causal = torch.tril(torch.ones(T, T, device=x.device, dtype=x.dtype))
+        kernel = torch.pow(a.view(1, 1, -1), dt.unsqueeze(-1))
+        kernel = kernel * causal.unsqueeze(-1) * b.view(1, 1, -1)
+
+        h_from_inputs = torch.einsum('tkd,bkd->btd', kernel, u)
+        h_from_init = torch.pow(a.view(1, 1, -1), (time + 1).view(1, T, 1)) * h.unsqueeze(1)
+        h_all = h_from_init + h_from_inputs
+        h_last = h_all[:, -1, :]
+
+        y = self.out_proj(torch.tanh(h_all))
+        y = self.dropout(y) * gate
+        out = self.residual(x) + y
+        return out, h_last
 
     def step(self, x, h=None):
         if h is None:
             h = x.new_zeros(x.size(0), self.log_a.shape[0])
+        x_in = x
         x = self.norm(x)
         u = self.in_proj(x)
         gate = torch.sigmoid(self.gate_proj(x))
@@ -204,7 +215,7 @@ class SSMBlock(nn.Module):
         h = a * h + b * u
         y = self.out_proj(torch.tanh(h))
         y = self.dropout(y) * gate
-        return self.residual(x) + y, h
+        return self.residual(x_in) + y, h
 
 
 class WAM(nn.Module):
