@@ -1,0 +1,214 @@
+nohup: ignoring input
+============================================================
+WAM v2 — World Action Model with Temporal Dynamics
+============================================================
+
+[1/6] Loading multi-lap data (downsample=10, dt=0.050s = 20Hz)...
+    Lap_0: 2231 pts (ds=10) -> train=1561, val=670
+    Lap_1: 2145 pts (ds=10) -> train=1501, val=644
+    skip VehicleDynamicsDataset_Nov2023_2023-11_10.csv (partial lap)
+    Lap_11: 2351 pts (ds=10) -> train=1645, val=706
+    Lap_2: 2129 pts (ds=10) -> train=1490, val=639
+    Lap_3: 2207 pts (ds=10) -> train=1544, val=663
+    Lap_4: 2225 pts (ds=10) -> train=1557, val=668
+    skip VehicleDynamicsDataset_Nov2023_2023-11_5.csv (partial lap)
+    Lap_6: 2701 pts (ds=10) -> train=1890, val=811
+    Lap_7: 2501 pts (ds=10) -> train=1750, val=751
+    Lap_8: 2221 pts (ds=10) -> train=1554, val=667
+    Lap_9: 2891 pts (ds=10) -> train=2023, val=868
+  Total: train=16515, val=7087 (10 laps)
+  State dim: 18, Obs dim: 16, Action dim: 6
+  Seq len: 128 (6.4s)
+  Train sequences: 15235
+  Val sequences: 5807
+  Curriculum rollout: 5->30 steps (0.2s->1.5s), weight=0.15
+  Dream val: 400 steps (20.0s) every 5 epochs
+  Dream plots: 4 validation segments
+  No early stopping. Checkpoints every 100 epochs.
+  Device: cuda
+
+[2/6] Building WAM v2...
+  Obs encoder input: 16d (dynamic-only + sin/cos yaw)
+  Temporal backend: gru
+  SSM: d_model=256, layers=5, state_dim=256
+  Decoder hidden: 512
+  Parameters: 3,043,854
+
+[3/6] Training with curriculum rollout + scheduled sampling...
+  Compiling model with torch.compile() for faster autoregressive training...
+  Epoch   1/400 | train=0.304843 | val=0.272084 | dream=103.47m | rollout_k=5 | lr=6.0e-05 | traj_w=0.20 *
+  Epoch  10/400 | train=0.159751 | val=0.187576 | dream=223.26m | rollout_k=5 | lr=3.0e-04 | traj_w=0.25
+  Epoch  20/400 | train=0.123839 | val=0.178512 | dream=148.35m | rollout_k=5 | lr=3.0e-04 | traj_w=0.32
+  Epoch  25/400 | train=0.106559 | val=0.189078 | dream=75.30m | rollout_k=6 | lr=3.0e-04 | traj_w=0.35 *
+  Epoch  30/400 | train=0.087339 | val=0.208923 | dream=111.58m | rollout_k=8 | lr=3.0e-04 | traj_w=0.38
+  Epoch  40/400 | train=0.057504 | val=0.232249 | dream=182.51m | rollout_k=11 | lr=3.0e-04 | traj_w=0.44
+  Epoch  50/400 | train=0.047269 | val=0.231887 | dream=99.07m | rollout_k=14 | lr=2.9e-04 | traj_w=0.50
+  Epoch  55/400 | train=0.039870 | val=0.241646 | dream=45.22m | rollout_k=15 | lr=2.9e-04 | traj_w=0.53 *
+  Epoch  60/400 | train=0.033784 | val=0.235126 | dream=222.11m | rollout_k=17 | lr=2.9e-04 | traj_w=0.56
+  Epoch  70/400 | train=0.027770 | val=0.233931 | dream=64.37m | rollout_k=20 | lr=2.8e-04 | traj_w=0.62
+  Epoch  80/400 | train=0.024158 | val=0.235453 | dream=48.30m | rollout_k=23 | lr=2.8e-04 | traj_w=0.68
+  Epoch  90/400 | train=0.022067 | val=0.229502 | dream=274.42m | rollout_k=26 | lr=2.7e-04 | traj_w=0.74
+  Epoch 100/400 | train=0.022166 | val=0.228183 | dream=40.02m | rollout_k=30 | lr=2.6e-04 | traj_w=0.80 *
+  Epoch 110/400 | train=0.020357 | val=0.229631 | dream=240.53m | rollout_k=30 | lr=2.5e-04 | traj_w=0.80
+  Epoch 115/400 | train=0.022298 | val=0.231474 | dream=29.77m | rollout_k=30 | lr=2.5e-04 | traj_w=0.80 *
+  Epoch 120/400 | train=0.018969 | val=0.222462 | dream=17.59m | rollout_k=30 | lr=2.4e-04 | traj_w=0.80 *
+  Epoch 130/400 | train=0.018148 | val=0.225793 | dream=8.01m | rollout_k=30 | lr=2.4e-04 | traj_w=0.80 *
+  Epoch 140/400 | train=0.015802 | val=0.222939 | dream=88.13m | rollout_k=30 | lr=2.2e-04 | traj_w=0.80
+  Epoch 150/400 | train=0.015447 | val=0.224477 | dream=24.76m | rollout_k=30 | lr=2.1e-04 | traj_w=0.80
+  Epoch 160/400 | train=0.014596 | val=0.223773 | dream=15.26m | rollout_k=30 | lr=2.0e-04 | traj_w=0.80
+  Epoch 170/400 | train=0.014471 | val=0.219855 | dream=94.32m | rollout_k=30 | lr=1.9e-04 | traj_w=0.80
+  Epoch 180/400 | train=0.015001 | val=0.224429 | dream=185.44m | rollout_k=30 | lr=1.8e-04 | traj_w=0.80
+  Epoch 190/400 | train=0.012952 | val=0.223069 | dream=40.52m | rollout_k=30 | lr=1.7e-04 | traj_w=0.80
+  Epoch 200/400 | train=0.012005 | val=0.220697 | dream=56.60m | rollout_k=30 | lr=1.6e-04 | traj_w=0.80
+  Epoch 210/400 | train=0.011900 | val=0.220027 | dream=35.46m | rollout_k=30 | lr=1.4e-04 | traj_w=0.80
+  Epoch 220/400 | train=0.011204 | val=0.220374 | dream=30.43m | rollout_k=30 | lr=1.3e-04 | traj_w=0.80
+  Epoch 230/400 | train=0.010255 | val=0.221323 | dream=11.81m | rollout_k=30 | lr=1.2e-04 | traj_w=0.80
+  Epoch 240/400 | train=0.010655 | val=0.218621 | dream=42.66m | rollout_k=30 | lr=1.1e-04 | traj_w=0.80
+  Epoch 250/400 | train=0.009963 | val=0.220843 | dream=46.97m | rollout_k=30 | lr=9.7e-05 | traj_w=0.80
+  Epoch 260/400 | train=0.009760 | val=0.222186 | dream=27.00m | rollout_k=30 | lr=8.6e-05 | traj_w=0.80
+  Epoch 270/400 | train=0.009251 | val=0.222066 | dream=14.21m | rollout_k=30 | lr=7.5e-05 | traj_w=0.80
+  Epoch 280/400 | train=0.008693 | val=0.221959 | dream=19.26m | rollout_k=30 | lr=6.5e-05 | traj_w=0.80
+  Epoch 290/400 | train=0.008597 | val=0.222249 | dream=14.55m | rollout_k=30 | lr=5.5e-05 | traj_w=0.80
+  Epoch 300/400 | train=0.008537 | val=0.222991 | dream=17.77m | rollout_k=30 | lr=4.6e-05 | traj_w=0.80
+  Epoch 310/400 | train=0.008196 | val=0.222386 | dream=9.94m | rollout_k=30 | lr=3.8e-05 | traj_w=0.80
+  Epoch 320/400 | train=0.008178 | val=0.222688 | dream=15.25m | rollout_k=30 | lr=3.0e-05 | traj_w=0.80
+  Epoch 330/400 | train=0.008051 | val=0.222780 | dream=21.47m | rollout_k=30 | lr=2.3e-05 | traj_w=0.80
+  Epoch 340/400 | train=0.007991 | val=0.223078 | dream=12.89m | rollout_k=30 | lr=1.7e-05 | traj_w=0.80
+  Epoch 350/400 | train=0.007886 | val=0.221711 | dream=16.89m | rollout_k=30 | lr=1.2e-05 | traj_w=0.80
+  Epoch 360/400 | train=0.007842 | val=0.222868 | dream=14.68m | rollout_k=30 | lr=7.7e-06 | traj_w=0.80
+  Epoch 370/400 | train=0.007808 | val=0.221899 | dream=12.27m | rollout_k=30 | lr=4.4e-06 | traj_w=0.80
+  Epoch 380/400 | train=0.007791 | val=0.221868 | dream=8.41m | rollout_k=30 | lr=1.9e-06 | traj_w=0.80
+  Epoch 390/400 | train=0.007764 | val=0.222010 | dream=14.97m | rollout_k=30 | lr=4.9e-07 | traj_w=0.80
+  Epoch 400/400 | train=0.007763 | val=0.222021 | dream=13.76m | rollout_k=30 | lr=0.0e+00 | traj_w=0.80
+  Model saved to /home/shiyuqi/CascadeProjects/wam/autodrive/models/wam_v3_best.pt
+
+[4/6] Evaluating (teacher forcing, one-step)...
+/home/shiyuqi/CascadeProjects/wam/autodrive/.venv/lib/python3.12/site-packages/torch/_inductor/compile_fx.py:321: UserWarning: TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled. Consider setting `torch.set_float32_matmul_precision('high')` for better performance.
+  warnings.warn(
+
+=======================================================
+Teacher-Forcing One-Step Evaluation (669 steps)
+=======================================================
+  3D MAE:        0.039904 m
+  3D Max Error:  0.069717 m
+  posE: MAE=0.021250 m
+  posN: MAE=0.029985 m
+  posU: MAE=0.001382 m
+
+[5/6] Evaluating (dream rollout across validation segments)...
+
+  Dream segment 1/4: Lap_0
+
+=======================================================
+Dream Rollout Evaluation (400 steps = 20.0s)
+=======================================================
+  3D MAE:        8.0147 m
+  3D Max Error:  29.7725 m
+  posE: MAE=5.0755 m
+  posN: MAE=5.1318 m
+  posU: MAE=0.9377 m
+  --- Velocity ---
+  Speed MAE:     1.7131 m/s
+  Vx: MAE=1.5022 m/s
+  Vy: MAE=0.2783 m/s
+  Vz: MAE=0.5305 m/s
+  @0.5s (step 10): 3D=0.1815m, Speed=0.4555m/s
+  @1.0s (step 20): 3D=0.4393m, Speed=0.7897m/s
+  @2.0s (step 40): 3D=1.5316m, Speed=1.6049m/s
+  @5.0s (step 100): 3D=7.3970m, Speed=1.7617m/s
+  @10.0s (step 200): 3D=10.3496m, Speed=2.1524m/s
+
+  Dream segment 2/4: Lap_1
+
+=======================================================
+Dream Rollout Evaluation (400 steps = 20.0s)
+=======================================================
+  3D MAE:        18.4858 m
+  3D Max Error:  91.0858 m
+  posE: MAE=8.2457 m
+  posN: MAE=14.7472 m
+  posU: MAE=2.0824 m
+  --- Velocity ---
+  Speed MAE:     1.9613 m/s
+  Vx: MAE=1.6084 m/s
+  Vy: MAE=0.3428 m/s
+  Vz: MAE=0.5673 m/s
+  @0.5s (step 10): 3D=0.3832m, Speed=1.3540m/s
+  @1.0s (step 20): 3D=1.1684m, Speed=1.5457m/s
+  @2.0s (step 40): 3D=3.0287m, Speed=1.9421m/s
+  @5.0s (step 100): 3D=9.7311m, Speed=1.4906m/s
+  @10.0s (step 200): 3D=16.0643m, Speed=1.0442m/s
+
+  Dream segment 3/4: Lap_11
+
+=======================================================
+Dream Rollout Evaluation (400 steps = 20.0s)
+=======================================================
+  3D MAE:        76.0530 m
+  3D Max Error:  133.1065 m
+  posE: MAE=46.4342 m
+  posN: MAE=52.1516 m
+  posU: MAE=0.6809 m
+  --- Velocity ---
+  Speed MAE:     2.5063 m/s
+  Vx: MAE=2.3507 m/s
+  Vy: MAE=0.5301 m/s
+  Vz: MAE=0.4233 m/s
+  @0.5s (step 10): 3D=0.3045m, Speed=0.2917m/s
+  @1.0s (step 20): 3D=1.1736m, Speed=0.6119m/s
+  @2.0s (step 40): 3D=4.6268m, Speed=1.5769m/s
+  @5.0s (step 100): 3D=27.2975m, Speed=2.3283m/s
+  @10.0s (step 200): 3D=92.7820m, Speed=5.3706m/s
+
+  Dream segment 4/4: Lap_2
+
+=======================================================
+Dream Rollout Evaluation (400 steps = 20.0s)
+=======================================================
+  3D MAE:        19.1640 m
+  3D Max Error:  88.1752 m
+  posE: MAE=13.0123 m
+  posN: MAE=10.9148 m
+  posU: MAE=1.0526 m
+  --- Velocity ---
+  Speed MAE:     1.8160 m/s
+  Vx: MAE=1.6208 m/s
+  Vy: MAE=0.3511 m/s
+  Vz: MAE=0.4341 m/s
+  @0.5s (step 10): 3D=0.2738m, Speed=0.8559m/s
+  @1.0s (step 20): 3D=0.7692m, Speed=1.3861m/s
+  @2.0s (step 40): 3D=3.0013m, Speed=2.1332m/s
+  @5.0s (step 100): 3D=11.0059m, Speed=0.3761m/s
+  @10.0s (step 200): 3D=7.7489m, Speed=2.1289m/s
+
+[6/6] Generating visualizations...
+
+[6/6] Generating visualizations...
+  saved visualization/wam_v3/wam_v2_training_loss.svg
+  saved visualization/wam_v3/lap_0/wam_v2_dream_3d.html
+  saved visualization/wam_v3/lap_0/wam_v2_dream_topdown.svg
+  saved visualization/wam_v3/lap_0/wam_v2_dream_error_vs_time.svg
+  saved visualization/wam_v3/lap_0/wam_v2_state_comparison.svg
+  saved visualization/wam_v3/lap_0/wam_v2_dream_velocity.svg
+  saved visualization/wam_v3/lap_1/wam_v2_dream_3d.html
+  saved visualization/wam_v3/lap_1/wam_v2_dream_topdown.svg
+  saved visualization/wam_v3/lap_1/wam_v2_dream_error_vs_time.svg
+  saved visualization/wam_v3/lap_1/wam_v2_state_comparison.svg
+  saved visualization/wam_v3/lap_1/wam_v2_dream_velocity.svg
+  saved visualization/wam_v3/lap_11/wam_v2_dream_3d.html
+  saved visualization/wam_v3/lap_11/wam_v2_dream_topdown.svg
+  saved visualization/wam_v3/lap_11/wam_v2_dream_error_vs_time.svg
+  saved visualization/wam_v3/lap_11/wam_v2_state_comparison.svg
+  saved visualization/wam_v3/lap_11/wam_v2_dream_velocity.svg
+  saved visualization/wam_v3/lap_2/wam_v2_dream_3d.html
+  saved visualization/wam_v3/lap_2/wam_v2_dream_topdown.svg
+  saved visualization/wam_v3/lap_2/wam_v2_dream_error_vs_time.svg
+  saved visualization/wam_v3/lap_2/wam_v2_state_comparison.svg
+  saved visualization/wam_v3/lap_2/wam_v2_dream_velocity.svg
+  saved visualization/wam_v3/wam_v2_action_intervention.svg
+
+============================================================
+Done!
+  Model:          /home/shiyuqi/CascadeProjects/wam/autodrive/models/wam_v3_best.pt
+  Visualizations: visualization/wam_v3/
+============================================================
