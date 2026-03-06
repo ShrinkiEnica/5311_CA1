@@ -123,7 +123,7 @@ DT = 0.005 * DOWNSAMPLE # 0.05s per step
 TRAIN_RATIO = 0.7
 SEQ_LEN = 64            # training sequence length (3.2s @ 20Hz)
 BATCH_SIZE = 512
-EPOCHS = 500
+EPOCHS = 2000
 LR = 3e-4
 WEIGHT_DECAY = 1e-5
 D_MODEL = 96            # ssm model dimension
@@ -152,7 +152,8 @@ STATE_CLIP_MARGIN = 0.1
 
 # Dream validation (for monitoring, NOT early stopping)
 DREAM_VAL_STEPS = 400   # 20s dream for validation metric (match eval)
-DREAM_VAL_EVERY = 10    # evaluate dream every N epochs
+DREAM_VAL_EVERY = 5     # evaluate dream every N epochs
+EARLY_STOP_DREAM_ERR_THRESHOLD = 8.0 # Stop training if dream error falls below this in meters
 SAVE_EVERY = 100        # save checkpoint every N epochs
 DREAM_PLOT_SEGMENTS = 4 # number of validation segments to visualize after training
 
@@ -802,10 +803,10 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
                   f"lr={current_lr:.1e} | traj_w={traj_scale:.2f}{marker}",
                   flush=True)
 
-        # # ---- Early stopping (DISABLED) ----
-        # if no_improve >= config["patience"]:
-        #     print(f"  Early stopping at epoch {epoch}")
-        #     break
+        # ---- Early stopping on absolute dream error threshold ----
+        if d_err <= EARLY_STOP_DREAM_ERR_THRESHOLD:
+            print(f"  [Early Stopping] Dream error ({d_err:.2f}m) reached threshold ({EARLY_STOP_DREAM_ERR_THRESHOLD}m) at epoch {epoch}!", flush=True)
+            break
 
     # Load best model at the end
     if best_state is not None:

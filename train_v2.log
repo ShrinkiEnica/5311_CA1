@@ -22,7 +22,7 @@ WAM v2 — World Action Model with Temporal Dynamics
   Train sequences: 15875
   Val sequences: 6447
   Curriculum rollout: 5->30 steps (0.2s->1.5s), weight=0.15
-  Dream val: 400 steps (20.0s) every 10 epochs
+  Dream val: 400 steps (20.0s) every 5 epochs
   Dream plots: 4 validation segments
   No early stopping. Checkpoints every 100 epochs.
   Device: cuda
@@ -36,57 +36,212 @@ WAM v2 — World Action Model with Temporal Dynamics
 
 [3/6] Training with curriculum rollout + scheduled sampling...
   Compiling model with torch.compile() for faster autoregressive training...
-  Epoch   1/500 | train=0.285044 | val=0.261748 | dream=150.04m | rollout_k=5 | lr=6.0e-05 | traj_w=0.20 *
-  Epoch  10/500 | train=0.161147 | val=0.180690 | dream=144.98m | rollout_k=5 | lr=3.0e-04 | traj_w=0.25 *
-  Epoch  20/500 | train=0.138601 | val=0.173145 | dream=82.62m | rollout_k=5 | lr=3.0e-04 | traj_w=0.32 *
-  Epoch  30/500 | train=0.121102 | val=0.185254 | dream=146.83m | rollout_k=8 | lr=3.0e-04 | traj_w=0.38
-  Epoch  40/500 | train=0.101166 | val=0.205200 | dream=195.23m | rollout_k=11 | lr=3.0e-04 | traj_w=0.44
-  Epoch  50/500 | train=0.087749 | val=0.223834 | dream=141.47m | rollout_k=14 | lr=3.0e-04 | traj_w=0.50
-  Epoch  60/500 | train=0.077442 | val=0.245433 | dream=168.93m | rollout_k=17 | lr=2.9e-04 | traj_w=0.56
-  Epoch  70/500 | train=0.069698 | val=0.253027 | dream=65.48m | rollout_k=20 | lr=2.9e-04 | traj_w=0.62 *
-  Epoch  80/500 | train=0.063758 | val=0.258241 | dream=41.41m | rollout_k=23 | lr=2.9e-04 | traj_w=0.68 *
-  Epoch  90/500 | train=0.058033 | val=0.269917 | dream=190.78m | rollout_k=26 | lr=2.8e-04 | traj_w=0.74
-  Epoch 100/500 | train=0.055808 | val=0.259367 | dream=104.43m | rollout_k=30 | lr=2.8e-04 | traj_w=0.80
-  Epoch 110/500 | train=0.050882 | val=0.265413 | dream=84.25m | rollout_k=30 | lr=2.7e-04 | traj_w=0.80
-  Epoch 120/500 | train=0.046986 | val=0.275800 | dream=107.29m | rollout_k=30 | lr=2.6e-04 | traj_w=0.80
-  Epoch 130/500 | train=0.044547 | val=0.268675 | dream=99.62m | rollout_k=30 | lr=2.6e-04 | traj_w=0.80
-  Epoch 140/500 | train=0.042386 | val=0.273230 | dream=65.78m | rollout_k=30 | lr=2.5e-04 | traj_w=0.80
-  Epoch 150/500 | train=0.040017 | val=0.271130 | dream=26.85m | rollout_k=30 | lr=2.4e-04 | traj_w=0.80 *
-  Epoch 160/500 | train=0.037869 | val=0.280378 | dream=131.77m | rollout_k=30 | lr=2.4e-04 | traj_w=0.80
-  Epoch 170/500 | train=0.037615 | val=0.275533 | dream=82.98m | rollout_k=30 | lr=2.3e-04 | traj_w=0.80
-  Epoch 180/500 | train=0.035308 | val=0.278544 | dream=119.88m | rollout_k=30 | lr=2.2e-04 | traj_w=0.80
-  Epoch 190/500 | train=0.033756 | val=0.280501 | dream=101.89m | rollout_k=30 | lr=2.1e-04 | traj_w=0.80
-  Epoch 200/500 | train=0.033890 | val=0.281047 | dream=102.84m | rollout_k=30 | lr=2.0e-04 | traj_w=0.80
-  Epoch 210/500 | train=0.031622 | val=0.277483 | dream=119.63m | rollout_k=30 | lr=1.9e-04 | traj_w=0.80
-  Epoch 220/500 | train=0.031045 | val=0.279683 | dream=35.56m | rollout_k=30 | lr=1.8e-04 | traj_w=0.80
-  Epoch 230/500 | train=0.030280 | val=0.285690 | dream=34.31m | rollout_k=30 | lr=1.7e-04 | traj_w=0.80
-  Epoch 240/500 | train=0.029502 | val=0.286818 | dream=105.44m | rollout_k=30 | lr=1.6e-04 | traj_w=0.80
-  Epoch 250/500 | train=0.028597 | val=0.278851 | dream=44.05m | rollout_k=30 | lr=1.5e-04 | traj_w=0.80
-  Epoch 260/500 | train=0.027773 | val=0.280190 | dream=98.36m | rollout_k=30 | lr=1.5e-04 | traj_w=0.80
-  Epoch 270/500 | train=0.027488 | val=0.282263 | dream=35.37m | rollout_k=30 | lr=1.4e-04 | traj_w=0.80
-  Epoch 280/500 | train=0.026719 | val=0.279475 | dream=132.37m | rollout_k=30 | lr=1.3e-04 | traj_w=0.80
-  Epoch 290/500 | train=0.026273 | val=0.282117 | dream=70.44m | rollout_k=30 | lr=1.2e-04 | traj_w=0.80
-  Epoch 300/500 | train=0.025658 | val=0.283590 | dream=163.95m | rollout_k=30 | lr=1.1e-04 | traj_w=0.80
-  Epoch 310/500 | train=0.025271 | val=0.283661 | dream=63.25m | rollout_k=30 | lr=9.8e-05 | traj_w=0.80
-  Epoch 320/500 | train=0.025094 | val=0.281096 | dream=21.60m | rollout_k=30 | lr=8.9e-05 | traj_w=0.80 *
-  Epoch 330/500 | train=0.024761 | val=0.281546 | dream=71.69m | rollout_k=30 | lr=8.1e-05 | traj_w=0.80
-  Epoch 340/500 | train=0.024413 | val=0.281154 | dream=95.30m | rollout_k=30 | lr=7.2e-05 | traj_w=0.80
-  Epoch 350/500 | train=0.024149 | val=0.283435 | dream=91.79m | rollout_k=30 | lr=6.4e-05 | traj_w=0.80
-  Epoch 360/500 | train=0.023823 | val=0.282094 | dream=31.61m | rollout_k=30 | lr=5.6e-05 | traj_w=0.80
-  Epoch 370/500 | train=0.023617 | val=0.282005 | dream=202.49m | rollout_k=30 | lr=4.9e-05 | traj_w=0.80
-  Epoch 380/500 | train=0.023422 | val=0.282716 | dream=107.33m | rollout_k=30 | lr=4.2e-05 | traj_w=0.80
-  Epoch 390/500 | train=0.023280 | val=0.282575 | dream=126.78m | rollout_k=30 | lr=3.6e-05 | traj_w=0.80
-  Epoch 400/500 | train=0.023179 | val=0.282580 | dream=101.06m | rollout_k=30 | lr=3.0e-05 | traj_w=0.80
-  Epoch 410/500 | train=0.023018 | val=0.282150 | dream=132.83m | rollout_k=30 | lr=2.4e-05 | traj_w=0.80
-  Epoch 420/500 | train=0.022911 | val=0.283040 | dream=47.86m | rollout_k=30 | lr=1.9e-05 | traj_w=0.80
-  Epoch 430/500 | train=0.022852 | val=0.282576 | dream=144.16m | rollout_k=30 | lr=1.5e-05 | traj_w=0.80
-  Epoch 440/500 | train=0.022775 | val=0.282119 | dream=144.48m | rollout_k=30 | lr=1.1e-05 | traj_w=0.80
-  Epoch 450/500 | train=0.022728 | val=0.282201 | dream=91.75m | rollout_k=30 | lr=7.6e-06 | traj_w=0.80
-  Epoch 460/500 | train=0.022685 | val=0.282101 | dream=134.63m | rollout_k=30 | lr=4.9e-06 | traj_w=0.80
-  Epoch 470/500 | train=0.022638 | val=0.282324 | dream=127.74m | rollout_k=30 | lr=2.8e-06 | traj_w=0.80
-  Epoch 480/500 | train=0.022626 | val=0.282395 | dream=101.63m | rollout_k=30 | lr=1.2e-06 | traj_w=0.80
-  Epoch 490/500 | train=0.022595 | val=0.282331 | dream=149.11m | rollout_k=30 | lr=3.1e-07 | traj_w=0.80
-  Epoch 500/500 | train=0.022609 | val=0.282336 | dream=141.47m | rollout_k=30 | lr=0.0e+00 | traj_w=0.80
+  Epoch   1/2000 | train=0.284280 | val=0.263067 | dream=148.38m | rollout_k=5 | lr=6.0e-05 | traj_w=0.20 *
+  Epoch   5/2000 | train=0.200915 | val=0.211961 | dream=125.30m | rollout_k=5 | lr=1.8e-04 | traj_w=0.22 *
+  Epoch  10/2000 | train=0.163327 | val=0.183840 | dream=171.98m | rollout_k=5 | lr=3.0e-04 | traj_w=0.25
+  Epoch  20/2000 | train=0.140111 | val=0.178787 | dream=204.28m | rollout_k=5 | lr=3.0e-04 | traj_w=0.32
+  Epoch  30/2000 | train=0.121712 | val=0.193220 | dream=174.40m | rollout_k=8 | lr=3.0e-04 | traj_w=0.38
+  Epoch  40/2000 | train=0.104258 | val=0.211646 | dream=79.44m | rollout_k=11 | lr=3.0e-04 | traj_w=0.44 *
+  Epoch  50/2000 | train=0.089667 | val=0.220478 | dream=200.50m | rollout_k=14 | lr=3.0e-04 | traj_w=0.50
+  Epoch  60/2000 | train=0.077400 | val=0.236464 | dream=91.43m | rollout_k=17 | lr=3.0e-04 | traj_w=0.56
+  Epoch  65/2000 | train=0.073419 | val=0.245372 | dream=53.75m | rollout_k=19 | lr=3.0e-04 | traj_w=0.59 *
+  Epoch  70/2000 | train=0.069573 | val=0.254185 | dream=149.47m | rollout_k=20 | lr=3.0e-04 | traj_w=0.62
+  Epoch  75/2000 | train=0.066602 | val=0.246727 | dream=30.80m | rollout_k=22 | lr=3.0e-04 | traj_w=0.65 *
+  Epoch  80/2000 | train=0.063887 | val=0.257579 | dream=214.57m | rollout_k=23 | lr=3.0e-04 | traj_w=0.68
+  Epoch  90/2000 | train=0.059096 | val=0.254839 | dream=49.38m | rollout_k=26 | lr=3.0e-04 | traj_w=0.74
+  Epoch 100/2000 | train=0.054825 | val=0.257695 | dream=57.14m | rollout_k=30 | lr=3.0e-04 | traj_w=0.80
+  Epoch 110/2000 | train=0.051676 | val=0.259030 | dream=95.62m | rollout_k=30 | lr=3.0e-04 | traj_w=0.80
+  Epoch 120/2000 | train=0.048624 | val=0.256663 | dream=158.10m | rollout_k=30 | lr=3.0e-04 | traj_w=0.80
+  Epoch 130/2000 | train=0.045307 | val=0.252122 | dream=202.33m | rollout_k=30 | lr=3.0e-04 | traj_w=0.80
+  Epoch 140/2000 | train=0.042867 | val=0.256676 | dream=208.99m | rollout_k=30 | lr=3.0e-04 | traj_w=0.80
+  Epoch 150/2000 | train=0.040798 | val=0.258437 | dream=74.64m | rollout_k=30 | lr=3.0e-04 | traj_w=0.80
+  Epoch 160/2000 | train=0.039057 | val=0.256884 | dream=153.70m | rollout_k=30 | lr=3.0e-04 | traj_w=0.80
+  Epoch 170/2000 | train=0.038596 | val=0.264292 | dream=167.22m | rollout_k=30 | lr=3.0e-04 | traj_w=0.80
+  Epoch 180/2000 | train=0.037230 | val=0.260522 | dream=43.91m | rollout_k=30 | lr=2.9e-04 | traj_w=0.80
+  Epoch 190/2000 | train=0.035056 | val=0.258665 | dream=178.45m | rollout_k=30 | lr=2.9e-04 | traj_w=0.80
+  Epoch 200/2000 | train=0.033148 | val=0.260995 | dream=192.10m | rollout_k=30 | lr=2.9e-04 | traj_w=0.80
+  Epoch 210/2000 | train=0.034354 | val=0.263350 | dream=140.40m | rollout_k=30 | lr=2.9e-04 | traj_w=0.80
+  Epoch 220/2000 | train=0.032235 | val=0.260743 | dream=57.87m | rollout_k=30 | lr=2.9e-04 | traj_w=0.80
+  Epoch 230/2000 | train=0.031945 | val=0.264107 | dream=152.17m | rollout_k=30 | lr=2.9e-04 | traj_w=0.80
+  Epoch 240/2000 | train=0.030144 | val=0.257677 | dream=85.58m | rollout_k=30 | lr=2.9e-04 | traj_w=0.80
+  Epoch 250/2000 | train=0.029506 | val=0.256441 | dream=198.53m | rollout_k=30 | lr=2.9e-04 | traj_w=0.80
+  Epoch 260/2000 | train=0.028056 | val=0.265970 | dream=147.85m | rollout_k=30 | lr=2.9e-04 | traj_w=0.80
+  Epoch 270/2000 | train=0.027551 | val=0.258986 | dream=135.19m | rollout_k=30 | lr=2.9e-04 | traj_w=0.80
+  Epoch 280/2000 | train=0.027620 | val=0.262437 | dream=130.75m | rollout_k=30 | lr=2.9e-04 | traj_w=0.80
+  Epoch 290/2000 | train=0.026080 | val=0.263369 | dream=146.81m | rollout_k=30 | lr=2.9e-04 | traj_w=0.80
+  Epoch 300/2000 | train=0.026683 | val=0.256595 | dream=180.71m | rollout_k=30 | lr=2.8e-04 | traj_w=0.80
+  Epoch 310/2000 | train=0.025282 | val=0.257759 | dream=179.11m | rollout_k=30 | lr=2.8e-04 | traj_w=0.80
+  Epoch 320/2000 | train=0.024771 | val=0.258989 | dream=184.40m | rollout_k=30 | lr=2.8e-04 | traj_w=0.80
+  Epoch 330/2000 | train=0.024336 | val=0.258959 | dream=34.70m | rollout_k=30 | lr=2.8e-04 | traj_w=0.80
+  Epoch 340/2000 | train=0.025076 | val=0.255544 | dream=126.89m | rollout_k=30 | lr=2.8e-04 | traj_w=0.80
+  Epoch 350/2000 | train=0.024372 | val=0.258202 | dream=98.26m | rollout_k=30 | lr=2.8e-04 | traj_w=0.80
+  Epoch 360/2000 | train=0.025109 | val=0.257208 | dream=85.23m | rollout_k=30 | lr=2.8e-04 | traj_w=0.80
+  Epoch 370/2000 | train=0.022474 | val=0.258217 | dream=109.82m | rollout_k=30 | lr=2.8e-04 | traj_w=0.80
+  Epoch 380/2000 | train=0.022738 | val=0.257397 | dream=169.90m | rollout_k=30 | lr=2.8e-04 | traj_w=0.80
+  Epoch 390/2000 | train=0.022102 | val=0.262442 | dream=101.88m | rollout_k=30 | lr=2.7e-04 | traj_w=0.80
+  Epoch 400/2000 | train=0.021733 | val=0.259078 | dream=53.51m | rollout_k=30 | lr=2.7e-04 | traj_w=0.80
+  Epoch 410/2000 | train=0.021489 | val=0.258659 | dream=73.79m | rollout_k=30 | lr=2.7e-04 | traj_w=0.80
+  Epoch 420/2000 | train=0.022318 | val=0.255911 | dream=156.23m | rollout_k=30 | lr=2.7e-04 | traj_w=0.80
+  Epoch 430/2000 | train=0.021165 | val=0.255297 | dream=55.77m | rollout_k=30 | lr=2.7e-04 | traj_w=0.80
+  Epoch 440/2000 | train=0.022065 | val=0.255676 | dream=129.32m | rollout_k=30 | lr=2.7e-04 | traj_w=0.80
+  Epoch 450/2000 | train=0.020716 | val=0.252651 | dream=215.57m | rollout_k=30 | lr=2.7e-04 | traj_w=0.80
+  Epoch 460/2000 | train=0.020620 | val=0.259999 | dream=26.04m | rollout_k=30 | lr=2.6e-04 | traj_w=0.80 *
+  Epoch 470/2000 | train=0.020009 | val=0.254364 | dream=179.46m | rollout_k=30 | lr=2.6e-04 | traj_w=0.80
+  Epoch 480/2000 | train=0.019990 | val=0.256616 | dream=88.20m | rollout_k=30 | lr=2.6e-04 | traj_w=0.80
+  Epoch 490/2000 | train=0.019590 | val=0.254338 | dream=190.18m | rollout_k=30 | lr=2.6e-04 | traj_w=0.80
+  Epoch 495/2000 | train=0.019075 | val=0.257379 | dream=25.66m | rollout_k=30 | lr=2.6e-04 | traj_w=0.80 *
+  Epoch 500/2000 | train=0.019500 | val=0.258592 | dream=78.18m | rollout_k=30 | lr=2.6e-04 | traj_w=0.80
+  Epoch 510/2000 | train=0.019456 | val=0.254340 | dream=208.43m | rollout_k=30 | lr=2.6e-04 | traj_w=0.80
+  Epoch 515/2000 | train=0.019568 | val=0.255007 | dream=14.79m | rollout_k=30 | lr=2.5e-04 | traj_w=0.80 *
+  Epoch 520/2000 | train=0.019860 | val=0.256170 | dream=83.37m | rollout_k=30 | lr=2.5e-04 | traj_w=0.80
+  Epoch 530/2000 | train=0.018806 | val=0.253985 | dream=230.05m | rollout_k=30 | lr=2.5e-04 | traj_w=0.80
+  Epoch 540/2000 | train=0.019178 | val=0.257606 | dream=40.06m | rollout_k=30 | lr=2.5e-04 | traj_w=0.80
+  Epoch 550/2000 | train=0.020855 | val=0.257864 | dream=74.99m | rollout_k=30 | lr=2.5e-04 | traj_w=0.80
+  Epoch 560/2000 | train=0.019373 | val=0.261344 | dream=37.17m | rollout_k=30 | lr=2.5e-04 | traj_w=0.80
+  Epoch 570/2000 | train=0.018929 | val=0.253302 | dream=77.61m | rollout_k=30 | lr=2.5e-04 | traj_w=0.80
+  Epoch 580/2000 | train=0.019349 | val=0.254061 | dream=170.04m | rollout_k=30 | lr=2.4e-04 | traj_w=0.80
+  Epoch 590/2000 | train=0.019072 | val=0.258945 | dream=149.57m | rollout_k=30 | lr=2.4e-04 | traj_w=0.80
+  Epoch 600/2000 | train=0.018152 | val=0.255154 | dream=88.71m | rollout_k=30 | lr=2.4e-04 | traj_w=0.80
+  Epoch 610/2000 | train=0.017891 | val=0.254389 | dream=114.29m | rollout_k=30 | lr=2.4e-04 | traj_w=0.80
+  Epoch 620/2000 | train=0.018897 | val=0.253659 | dream=88.87m | rollout_k=30 | lr=2.4e-04 | traj_w=0.80
+  Epoch 630/2000 | train=0.019056 | val=0.254014 | dream=169.93m | rollout_k=30 | lr=2.3e-04 | traj_w=0.80
+  Epoch 640/2000 | train=0.017709 | val=0.254773 | dream=87.11m | rollout_k=30 | lr=2.3e-04 | traj_w=0.80
+  Epoch 650/2000 | train=0.017763 | val=0.255557 | dream=57.42m | rollout_k=30 | lr=2.3e-04 | traj_w=0.80
+  Epoch 660/2000 | train=0.018123 | val=0.253813 | dream=39.26m | rollout_k=30 | lr=2.3e-04 | traj_w=0.80
+  Epoch 670/2000 | train=0.017475 | val=0.252867 | dream=44.81m | rollout_k=30 | lr=2.3e-04 | traj_w=0.80
+  Epoch 680/2000 | train=0.017887 | val=0.255560 | dream=191.87m | rollout_k=30 | lr=2.2e-04 | traj_w=0.80
+  Epoch 690/2000 | train=0.017135 | val=0.252758 | dream=135.73m | rollout_k=30 | lr=2.2e-04 | traj_w=0.80
+  Epoch 700/2000 | train=0.017593 | val=0.254362 | dream=77.36m | rollout_k=30 | lr=2.2e-04 | traj_w=0.80
+  Epoch 710/2000 | train=0.017372 | val=0.250457 | dream=192.05m | rollout_k=30 | lr=2.2e-04 | traj_w=0.80
+  Epoch 720/2000 | train=0.017246 | val=0.255408 | dream=135.73m | rollout_k=30 | lr=2.2e-04 | traj_w=0.80
+  Epoch 730/2000 | train=0.016969 | val=0.254922 | dream=92.32m | rollout_k=30 | lr=2.1e-04 | traj_w=0.80
+  Epoch 740/2000 | train=0.016896 | val=0.253646 | dream=172.98m | rollout_k=30 | lr=2.1e-04 | traj_w=0.80
+  Epoch 750/2000 | train=0.016932 | val=0.252674 | dream=117.42m | rollout_k=30 | lr=2.1e-04 | traj_w=0.80
+  Epoch 760/2000 | train=0.017174 | val=0.252379 | dream=148.92m | rollout_k=30 | lr=2.1e-04 | traj_w=0.80
+  Epoch 770/2000 | train=0.016591 | val=0.253779 | dream=86.96m | rollout_k=30 | lr=2.0e-04 | traj_w=0.80
+  Epoch 780/2000 | train=0.016532 | val=0.252315 | dream=118.84m | rollout_k=30 | lr=2.0e-04 | traj_w=0.80
+  Epoch 790/2000 | train=0.016829 | val=0.253649 | dream=207.56m | rollout_k=30 | lr=2.0e-04 | traj_w=0.80
+  Epoch 800/2000 | train=0.016511 | val=0.253755 | dream=145.37m | rollout_k=30 | lr=2.0e-04 | traj_w=0.80
+  Epoch 810/2000 | train=0.016068 | val=0.253441 | dream=114.55m | rollout_k=30 | lr=2.0e-04 | traj_w=0.80
+  Epoch 820/2000 | train=0.015836 | val=0.253559 | dream=63.50m | rollout_k=30 | lr=1.9e-04 | traj_w=0.80
+  Epoch 830/2000 | train=0.016249 | val=0.252347 | dream=217.23m | rollout_k=30 | lr=1.9e-04 | traj_w=0.80
+  Epoch 840/2000 | train=0.016310 | val=0.256081 | dream=60.44m | rollout_k=30 | lr=1.9e-04 | traj_w=0.80
+  Epoch 850/2000 | train=0.015882 | val=0.252847 | dream=84.66m | rollout_k=30 | lr=1.9e-04 | traj_w=0.80
+  Epoch 860/2000 | train=0.015831 | val=0.253995 | dream=177.45m | rollout_k=30 | lr=1.8e-04 | traj_w=0.80
+  Epoch 870/2000 | train=0.015711 | val=0.252920 | dream=88.01m | rollout_k=30 | lr=1.8e-04 | traj_w=0.80
+  Epoch 880/2000 | train=0.015848 | val=0.252586 | dream=132.26m | rollout_k=30 | lr=1.8e-04 | traj_w=0.80
+  Epoch 890/2000 | train=0.015408 | val=0.255242 | dream=10.92m | rollout_k=30 | lr=1.8e-04 | traj_w=0.80 *
+  Epoch 900/2000 | train=0.015810 | val=0.251726 | dream=135.07m | rollout_k=30 | lr=1.7e-04 | traj_w=0.80
+  Epoch 910/2000 | train=0.015581 | val=0.252132 | dream=116.71m | rollout_k=30 | lr=1.7e-04 | traj_w=0.80
+  Epoch 920/2000 | train=0.015730 | val=0.252922 | dream=191.94m | rollout_k=30 | lr=1.7e-04 | traj_w=0.80
+  Epoch 930/2000 | train=0.015468 | val=0.255194 | dream=36.97m | rollout_k=30 | lr=1.7e-04 | traj_w=0.80
+  Epoch 940/2000 | train=0.015338 | val=0.254183 | dream=86.21m | rollout_k=30 | lr=1.7e-04 | traj_w=0.80
+  Epoch 950/2000 | train=0.015422 | val=0.254029 | dream=65.84m | rollout_k=30 | lr=1.6e-04 | traj_w=0.80
+  Epoch 960/2000 | train=0.015817 | val=0.254717 | dream=157.25m | rollout_k=30 | lr=1.6e-04 | traj_w=0.80
+  Epoch 970/2000 | train=0.015292 | val=0.254524 | dream=190.51m | rollout_k=30 | lr=1.6e-04 | traj_w=0.80
+  Epoch 980/2000 | train=0.015236 | val=0.254172 | dream=75.64m | rollout_k=30 | lr=1.6e-04 | traj_w=0.80
+  Epoch 990/2000 | train=0.016171 | val=0.256940 | dream=155.44m | rollout_k=30 | lr=1.5e-04 | traj_w=0.80
+  Epoch 1000/2000 | train=0.015088 | val=0.254534 | dream=37.38m | rollout_k=30 | lr=1.5e-04 | traj_w=0.80
+  Epoch 1010/2000 | train=0.014945 | val=0.255763 | dream=72.47m | rollout_k=30 | lr=1.5e-04 | traj_w=0.80
+  Epoch 1020/2000 | train=0.014978 | val=0.253461 | dream=33.65m | rollout_k=30 | lr=1.5e-04 | traj_w=0.80
+  Epoch 1030/2000 | train=0.015028 | val=0.255356 | dream=122.85m | rollout_k=30 | lr=1.4e-04 | traj_w=0.80
+  Epoch 1040/2000 | train=0.015364 | val=0.254365 | dream=95.52m | rollout_k=30 | lr=1.4e-04 | traj_w=0.80
+  Epoch 1050/2000 | train=0.015212 | val=0.253522 | dream=140.53m | rollout_k=30 | lr=1.4e-04 | traj_w=0.80
+  Epoch 1060/2000 | train=0.014828 | val=0.254108 | dream=138.33m | rollout_k=30 | lr=1.4e-04 | traj_w=0.80
+  Epoch 1070/2000 | train=0.015081 | val=0.257494 | dream=176.89m | rollout_k=30 | lr=1.3e-04 | traj_w=0.80
+  Epoch 1080/2000 | train=0.014698 | val=0.254835 | dream=173.24m | rollout_k=30 | lr=1.3e-04 | traj_w=0.80
+  Epoch 1090/2000 | train=0.014510 | val=0.254484 | dream=101.02m | rollout_k=30 | lr=1.3e-04 | traj_w=0.80
+  Epoch 1100/2000 | train=0.014633 | val=0.253225 | dream=82.65m | rollout_k=30 | lr=1.3e-04 | traj_w=0.80
+  Epoch 1110/2000 | train=0.014568 | val=0.253925 | dream=167.02m | rollout_k=30 | lr=1.3e-04 | traj_w=0.80
+  Epoch 1120/2000 | train=0.014783 | val=0.257128 | dream=11.34m | rollout_k=30 | lr=1.2e-04 | traj_w=0.80
+  Epoch 1130/2000 | train=0.014320 | val=0.254846 | dream=103.26m | rollout_k=30 | lr=1.2e-04 | traj_w=0.80
+  Epoch 1140/2000 | train=0.014462 | val=0.254252 | dream=131.00m | rollout_k=30 | lr=1.2e-04 | traj_w=0.80
+  Epoch 1150/2000 | train=0.014287 | val=0.254509 | dream=108.20m | rollout_k=30 | lr=1.2e-04 | traj_w=0.80
+  Epoch 1160/2000 | train=0.014290 | val=0.254083 | dream=100.34m | rollout_k=30 | lr=1.1e-04 | traj_w=0.80
+  Epoch 1170/2000 | train=0.014257 | val=0.253525 | dream=90.35m | rollout_k=30 | lr=1.1e-04 | traj_w=0.80
+  Epoch 1180/2000 | train=0.014192 | val=0.254160 | dream=38.72m | rollout_k=30 | lr=1.1e-04 | traj_w=0.80
+  Epoch 1190/2000 | train=0.014115 | val=0.255577 | dream=9.45m | rollout_k=30 | lr=1.1e-04 | traj_w=0.80 *
+  Epoch 1200/2000 | train=0.014209 | val=0.254444 | dream=121.76m | rollout_k=30 | lr=1.0e-04 | traj_w=0.80
+  Epoch 1210/2000 | train=0.014134 | val=0.255151 | dream=65.79m | rollout_k=30 | lr=1.0e-04 | traj_w=0.80
+  Epoch 1220/2000 | train=0.013976 | val=0.254437 | dream=125.37m | rollout_k=30 | lr=1.0e-04 | traj_w=0.80
+  Epoch 1230/2000 | train=0.014071 | val=0.253057 | dream=142.95m | rollout_k=30 | lr=9.8e-05 | traj_w=0.80
+  Epoch 1240/2000 | train=0.013903 | val=0.254875 | dream=76.86m | rollout_k=30 | lr=9.6e-05 | traj_w=0.80
+  Epoch 1250/2000 | train=0.014028 | val=0.255626 | dream=140.68m | rollout_k=30 | lr=9.3e-05 | traj_w=0.80
+  Epoch 1260/2000 | train=0.014128 | val=0.254325 | dream=155.96m | rollout_k=30 | lr=9.1e-05 | traj_w=0.80
+  Epoch 1270/2000 | train=0.013982 | val=0.254640 | dream=219.94m | rollout_k=30 | lr=8.9e-05 | traj_w=0.80
+  Epoch 1280/2000 | train=0.013851 | val=0.254651 | dream=109.09m | rollout_k=30 | lr=8.7e-05 | traj_w=0.80
+  Epoch 1290/2000 | train=0.013904 | val=0.255178 | dream=170.19m | rollout_k=30 | lr=8.5e-05 | traj_w=0.80
+  Epoch 1300/2000 | train=0.013726 | val=0.254359 | dream=143.68m | rollout_k=30 | lr=8.3e-05 | traj_w=0.80
+  Epoch 1310/2000 | train=0.013706 | val=0.255904 | dream=53.25m | rollout_k=30 | lr=8.1e-05 | traj_w=0.80
+  Epoch 1320/2000 | train=0.013715 | val=0.254767 | dream=127.79m | rollout_k=30 | lr=7.8e-05 | traj_w=0.80
+  Epoch 1330/2000 | train=0.013750 | val=0.255038 | dream=42.40m | rollout_k=30 | lr=7.6e-05 | traj_w=0.80
+  Epoch 1340/2000 | train=0.013715 | val=0.256203 | dream=67.65m | rollout_k=30 | lr=7.4e-05 | traj_w=0.80
+  Epoch 1350/2000 | train=0.013664 | val=0.255719 | dream=49.99m | rollout_k=30 | lr=7.2e-05 | traj_w=0.80
+  Epoch 1360/2000 | train=0.013576 | val=0.255872 | dream=100.61m | rollout_k=30 | lr=7.0e-05 | traj_w=0.80
+  Epoch 1370/2000 | train=0.013525 | val=0.254640 | dream=14.58m | rollout_k=30 | lr=6.8e-05 | traj_w=0.80
+  Epoch 1380/2000 | train=0.013543 | val=0.256784 | dream=106.00m | rollout_k=30 | lr=6.6e-05 | traj_w=0.80
+  Epoch 1390/2000 | train=0.013498 | val=0.256782 | dream=87.95m | rollout_k=30 | lr=6.4e-05 | traj_w=0.80
+  Epoch 1400/2000 | train=0.013388 | val=0.254915 | dream=88.36m | rollout_k=30 | lr=6.2e-05 | traj_w=0.80
+  Epoch 1410/2000 | train=0.013432 | val=0.256362 | dream=33.25m | rollout_k=30 | lr=6.0e-05 | traj_w=0.80
+  Epoch 1420/2000 | train=0.013356 | val=0.257870 | dream=124.94m | rollout_k=30 | lr=5.9e-05 | traj_w=0.80
+  Epoch 1430/2000 | train=0.013261 | val=0.256072 | dream=141.30m | rollout_k=30 | lr=5.7e-05 | traj_w=0.80
+  Epoch 1440/2000 | train=0.013326 | val=0.257506 | dream=107.73m | rollout_k=30 | lr=5.5e-05 | traj_w=0.80
+  Epoch 1450/2000 | train=0.013389 | val=0.255898 | dream=40.63m | rollout_k=30 | lr=5.3e-05 | traj_w=0.80
+  Epoch 1460/2000 | train=0.013217 | val=0.257439 | dream=62.08m | rollout_k=30 | lr=5.1e-05 | traj_w=0.80
+  Epoch 1470/2000 | train=0.013305 | val=0.257331 | dream=162.28m | rollout_k=30 | lr=5.0e-05 | traj_w=0.80
+  Epoch 1480/2000 | train=0.013235 | val=0.256730 | dream=14.16m | rollout_k=30 | lr=4.8e-05 | traj_w=0.80
+  Epoch 1490/2000 | train=0.013264 | val=0.255961 | dream=88.05m | rollout_k=30 | lr=4.6e-05 | traj_w=0.80
+  Epoch 1500/2000 | train=0.013211 | val=0.256401 | dream=72.79m | rollout_k=30 | lr=4.4e-05 | traj_w=0.80
+  Epoch 1510/2000 | train=0.013126 | val=0.256851 | dream=89.99m | rollout_k=30 | lr=4.3e-05 | traj_w=0.80
+  Epoch 1520/2000 | train=0.013182 | val=0.256485 | dream=122.18m | rollout_k=30 | lr=4.1e-05 | traj_w=0.80
+  Epoch 1530/2000 | train=0.013166 | val=0.257859 | dream=93.55m | rollout_k=30 | lr=3.9e-05 | traj_w=0.80
+  Epoch 1540/2000 | train=0.013086 | val=0.256353 | dream=161.65m | rollout_k=30 | lr=3.8e-05 | traj_w=0.80
+  Epoch 1550/2000 | train=0.013136 | val=0.258098 | dream=101.91m | rollout_k=30 | lr=3.6e-05 | traj_w=0.80
+  Epoch 1560/2000 | train=0.013019 | val=0.257240 | dream=127.02m | rollout_k=30 | lr=3.5e-05 | traj_w=0.80
+  Epoch 1570/2000 | train=0.013043 | val=0.257095 | dream=87.95m | rollout_k=30 | lr=3.3e-05 | traj_w=0.80
+  Epoch 1580/2000 | train=0.013054 | val=0.257318 | dream=159.37m | rollout_k=30 | lr=3.2e-05 | traj_w=0.80
+  Epoch 1590/2000 | train=0.012994 | val=0.255598 | dream=105.75m | rollout_k=30 | lr=3.0e-05 | traj_w=0.80
+  Epoch 1600/2000 | train=0.012985 | val=0.257422 | dream=12.15m | rollout_k=30 | lr=2.9e-05 | traj_w=0.80
+  Epoch 1610/2000 | train=0.012973 | val=0.255980 | dream=115.25m | rollout_k=30 | lr=2.8e-05 | traj_w=0.80
+  Epoch 1620/2000 | train=0.012940 | val=0.256414 | dream=144.78m | rollout_k=30 | lr=2.6e-05 | traj_w=0.80
+  Epoch 1630/2000 | train=0.012963 | val=0.256196 | dream=31.31m | rollout_k=30 | lr=2.5e-05 | traj_w=0.80
+  Epoch 1640/2000 | train=0.012905 | val=0.256939 | dream=69.28m | rollout_k=30 | lr=2.4e-05 | traj_w=0.80
+  Epoch 1650/2000 | train=0.012919 | val=0.256365 | dream=53.59m | rollout_k=30 | lr=2.2e-05 | traj_w=0.80
+  Epoch 1660/2000 | train=0.012889 | val=0.256681 | dream=85.09m | rollout_k=30 | lr=2.1e-05 | traj_w=0.80
+  Epoch 1670/2000 | train=0.012856 | val=0.256616 | dream=115.85m | rollout_k=30 | lr=2.0e-05 | traj_w=0.80
+  Epoch 1680/2000 | train=0.012827 | val=0.257033 | dream=139.41m | rollout_k=30 | lr=1.9e-05 | traj_w=0.80
+  Epoch 1690/2000 | train=0.012862 | val=0.257708 | dream=84.07m | rollout_k=30 | lr=1.8e-05 | traj_w=0.80
+  Epoch 1700/2000 | train=0.012846 | val=0.257304 | dream=163.24m | rollout_k=30 | lr=1.7e-05 | traj_w=0.80
+  Epoch 1710/2000 | train=0.012801 | val=0.257583 | dream=102.31m | rollout_k=30 | lr=1.5e-05 | traj_w=0.80
+  Epoch 1720/2000 | train=0.012815 | val=0.257707 | dream=147.14m | rollout_k=30 | lr=1.4e-05 | traj_w=0.80
+  Epoch 1730/2000 | train=0.012771 | val=0.257373 | dream=76.90m | rollout_k=30 | lr=1.3e-05 | traj_w=0.80
+  Epoch 1740/2000 | train=0.012775 | val=0.257469 | dream=123.44m | rollout_k=30 | lr=1.2e-05 | traj_w=0.80
+  Epoch 1750/2000 | train=0.012753 | val=0.256979 | dream=123.69m | rollout_k=30 | lr=1.2e-05 | traj_w=0.80
+  Epoch 1760/2000 | train=0.012735 | val=0.257916 | dream=54.28m | rollout_k=30 | lr=1.1e-05 | traj_w=0.80
+  Epoch 1770/2000 | train=0.012736 | val=0.257596 | dream=119.94m | rollout_k=30 | lr=9.8e-06 | traj_w=0.80
+  Epoch 1780/2000 | train=0.012715 | val=0.257738 | dream=83.51m | rollout_k=30 | lr=9.0e-06 | traj_w=0.80
+  Epoch 1790/2000 | train=0.012722 | val=0.257336 | dream=78.32m | rollout_k=30 | lr=8.2e-06 | traj_w=0.80
+  Epoch 1800/2000 | train=0.012708 | val=0.257220 | dream=127.07m | rollout_k=30 | lr=7.4e-06 | traj_w=0.80
+  Epoch 1810/2000 | train=0.012710 | val=0.257271 | dream=128.27m | rollout_k=30 | lr=6.7e-06 | traj_w=0.80
+  Epoch 1820/2000 | train=0.012698 | val=0.257367 | dream=70.92m | rollout_k=30 | lr=6.0e-06 | traj_w=0.80
+  Epoch 1830/2000 | train=0.012681 | val=0.257448 | dream=102.30m | rollout_k=30 | lr=5.4e-06 | traj_w=0.80
+  Epoch 1840/2000 | train=0.012680 | val=0.257668 | dream=23.92m | rollout_k=30 | lr=4.8e-06 | traj_w=0.80
+  Epoch 1850/2000 | train=0.012674 | val=0.257372 | dream=99.58m | rollout_k=30 | lr=4.2e-06 | traj_w=0.80
+  Epoch 1860/2000 | train=0.012674 | val=0.257082 | dream=104.26m | rollout_k=30 | lr=3.6e-06 | traj_w=0.80
+  Epoch 1870/2000 | train=0.012657 | val=0.257086 | dream=115.01m | rollout_k=30 | lr=3.1e-06 | traj_w=0.80
+  Epoch 1880/2000 | train=0.012660 | val=0.257439 | dream=101.85m | rollout_k=30 | lr=2.7e-06 | traj_w=0.80
+  Epoch 1890/2000 | train=0.012668 | val=0.257359 | dream=61.07m | rollout_k=30 | lr=2.3e-06 | traj_w=0.80
+  Epoch 1900/2000 | train=0.012646 | val=0.257478 | dream=86.34m | rollout_k=30 | lr=1.9e-06 | traj_w=0.80
+  Epoch 1910/2000 | train=0.012638 | val=0.257038 | dream=140.20m | rollout_k=30 | lr=1.5e-06 | traj_w=0.80
+  Epoch 1920/2000 | train=0.012642 | val=0.257236 | dream=116.76m | rollout_k=30 | lr=1.2e-06 | traj_w=0.80
+  Epoch 1930/2000 | train=0.012656 | val=0.257150 | dream=124.95m | rollout_k=30 | lr=9.1e-07 | traj_w=0.80
+  Epoch 1940/2000 | train=0.012637 | val=0.257290 | dream=82.72m | rollout_k=30 | lr=6.7e-07 | traj_w=0.80
+  Epoch 1950/2000 | train=0.012639 | val=0.257258 | dream=102.39m | rollout_k=30 | lr=4.7e-07 | traj_w=0.80
+  Epoch 1960/2000 | train=0.012649 | val=0.257390 | dream=104.37m | rollout_k=30 | lr=3.0e-07 | traj_w=0.80
+  Epoch 1970/2000 | train=0.012635 | val=0.257309 | dream=109.50m | rollout_k=30 | lr=1.7e-07 | traj_w=0.80
+  Epoch 1980/2000 | train=0.012655 | val=0.257362 | dream=133.03m | rollout_k=30 | lr=7.5e-08 | traj_w=0.80
+  Epoch 1990/2000 | train=0.012626 | val=0.257362 | dream=136.67m | rollout_k=30 | lr=1.9e-08 | traj_w=0.80
+  Epoch 2000/2000 | train=0.012629 | val=0.257362 | dream=124.81m | rollout_k=30 | lr=0.0e+00 | traj_w=0.80
   Model saved to /home/shiyuqi/CascadeProjects/wam/autodrive/models/wam_v2_best.pt
 
 [4/6] Evaluating (teacher forcing, one-step)...
@@ -94,11 +249,11 @@ WAM v2 — World Action Model with Temporal Dynamics
 =======================================================
 Teacher-Forcing One-Step Evaluation (669 steps)
 =======================================================
-  3D MAE:        0.039894 m
-  3D Max Error:  0.070392 m
-  posE: MAE=0.021163 m
-  posN: MAE=0.030002 m
-  posU: MAE=0.001448 m
+  3D MAE:        0.039929 m
+  3D Max Error:  0.072022 m
+  posE: MAE=0.021231 m
+  posN: MAE=0.030001 m
+  posU: MAE=0.001410 m
 
 [5/6] Evaluating (dream rollout across validation segments)...
 
@@ -107,84 +262,84 @@ Teacher-Forcing One-Step Evaluation (669 steps)
 =======================================================
 Dream Rollout Evaluation (400 steps = 20.0s)
 =======================================================
-  3D MAE:        21.6026 m
-  3D Max Error:  79.0515 m
-  posE: MAE=14.3907 m
-  posN: MAE=12.7254 m
-  posU: MAE=4.1451 m
+  3D MAE:        9.4505 m
+  3D Max Error:  33.1967 m
+  posE: MAE=3.6831 m
+  posN: MAE=8.0709 m
+  posU: MAE=1.7188 m
   --- Velocity ---
-  Speed MAE:     1.7458 m/s
-  Vx: MAE=1.1727 m/s
-  Vy: MAE=0.3915 m/s
-  Vz: MAE=0.7668 m/s
-  @0.5s (step 10): 3D=0.1637m, Speed=0.4820m/s
-  @1.0s (step 20): 3D=0.5355m, Speed=0.5963m/s
-  @2.0s (step 40): 3D=1.4891m, Speed=1.1295m/s
-  @5.0s (step 100): 3D=2.0907m, Speed=1.2032m/s
-  @10.0s (step 200): 3D=19.5640m, Speed=2.4322m/s
+  Speed MAE:     2.2443 m/s
+  Vx: MAE=1.7727 m/s
+  Vy: MAE=0.4930 m/s
+  Vz: MAE=0.8298 m/s
+  @0.5s (step 10): 3D=0.1035m, Speed=0.3771m/s
+  @1.0s (step 20): 3D=0.1553m, Speed=0.2329m/s
+  @2.0s (step 40): 3D=1.0112m, Speed=1.2791m/s
+  @5.0s (step 100): 3D=8.1459m, Speed=1.4937m/s
+  @10.0s (step 200): 3D=13.4677m, Speed=2.5232m/s
 
   Dream segment 2/4: Lap_1
 
 =======================================================
 Dream Rollout Evaluation (400 steps = 20.0s)
 =======================================================
-  3D MAE:        105.8513 m
-  3D Max Error:  239.5224 m
-  posE: MAE=68.3197 m
-  posN: MAE=71.9937 m
-  posU: MAE=8.0185 m
+  3D MAE:        56.6889 m
+  3D Max Error:  124.1748 m
+  posE: MAE=38.9688 m
+  posN: MAE=36.0919 m
+  posU: MAE=2.0779 m
   --- Velocity ---
-  Speed MAE:     3.4578 m/s
-  Vx: MAE=2.9237 m/s
-  Vy: MAE=1.0399 m/s
-  Vz: MAE=0.7917 m/s
-  @0.5s (step 10): 3D=0.0950m, Speed=0.4166m/s
-  @1.0s (step 20): 3D=0.1829m, Speed=0.4392m/s
-  @2.0s (step 40): 3D=1.4329m, Speed=0.7642m/s
-  @5.0s (step 100): 3D=11.6637m, Speed=3.6611m/s
-  @10.0s (step 200): 3D=92.4372m, Speed=3.4706m/s
+  Speed MAE:     3.2460 m/s
+  Vx: MAE=2.8233 m/s
+  Vy: MAE=0.7922 m/s
+  Vz: MAE=0.7721 m/s
+  @0.5s (step 10): 3D=0.2625m, Speed=0.9663m/s
+  @1.0s (step 20): 3D=0.8757m, Speed=0.9854m/s
+  @2.0s (step 40): 3D=2.4225m, Speed=1.3318m/s
+  @5.0s (step 100): 3D=2.8484m, Speed=1.4202m/s
+  @10.0s (step 200): 3D=54.9094m, Speed=3.5825m/s
 
   Dream segment 3/4: Lap_11
 
 =======================================================
 Dream Rollout Evaluation (400 steps = 20.0s)
 =======================================================
-  3D MAE:        115.1673 m
-  3D Max Error:  209.0439 m
-  posE: MAE=73.5558 m
-  posN: MAE=77.0064 m
-  posU: MAE=3.2592 m
+  3D MAE:        83.3114 m
+  3D Max Error:  153.2465 m
+  posE: MAE=51.9340 m
+  posN: MAE=57.6879 m
+  posU: MAE=1.8160 m
   --- Velocity ---
-  Speed MAE:     3.2593 m/s
-  Vx: MAE=2.7564 m/s
-  Vy: MAE=0.8853 m/s
-  Vz: MAE=0.8102 m/s
-  @0.5s (step 10): 3D=0.3395m, Speed=0.6139m/s
-  @1.0s (step 20): 3D=1.3051m, Speed=1.2860m/s
-  @2.0s (step 40): 3D=5.4234m, Speed=2.8719m/s
-  @5.0s (step 100): 3D=33.4121m, Speed=3.4963m/s
-  @10.0s (step 200): 3D=136.9900m, Speed=3.1200m/s
+  Speed MAE:     3.5605 m/s
+  Vx: MAE=3.1749 m/s
+  Vy: MAE=0.7914 m/s
+  Vz: MAE=0.6809 m/s
+  @0.5s (step 10): 3D=0.2734m, Speed=0.3010m/s
+  @1.0s (step 20): 3D=1.1496m, Speed=0.5385m/s
+  @2.0s (step 40): 3D=5.1774m, Speed=1.4152m/s
+  @5.0s (step 100): 3D=25.7141m, Speed=4.1652m/s
+  @10.0s (step 200): 3D=104.9938m, Speed=4.8868m/s
 
   Dream segment 4/4: Lap_2
 
 =======================================================
 Dream Rollout Evaluation (400 steps = 20.0s)
 =======================================================
-  3D MAE:        28.8303 m
-  3D Max Error:  62.1838 m
-  posE: MAE=25.2656 m
-  posN: MAE=10.4199 m
-  posU: MAE=2.9247 m
+  3D MAE:        39.9070 m
+  3D Max Error:  100.5080 m
+  posE: MAE=33.4851 m
+  posN: MAE=16.5562 m
+  posU: MAE=2.3468 m
   --- Velocity ---
-  Speed MAE:     2.4196 m/s
-  Vx: MAE=1.9274 m/s
-  Vy: MAE=0.7728 m/s
-  Vz: MAE=0.6750 m/s
-  @0.5s (step 10): 3D=0.0562m, Speed=0.3255m/s
-  @1.0s (step 20): 3D=0.3616m, Speed=0.3120m/s
-  @2.0s (step 40): 3D=2.0583m, Speed=0.7345m/s
-  @5.0s (step 100): 3D=14.7000m, Speed=3.2863m/s
-  @10.0s (step 200): 3D=37.8192m, Speed=2.4986m/s
+  Speed MAE:     2.9824 m/s
+  Vx: MAE=2.5709 m/s
+  Vy: MAE=0.7514 m/s
+  Vz: MAE=0.8211 m/s
+  @0.5s (step 10): 3D=0.1477m, Speed=0.4849m/s
+  @1.0s (step 20): 3D=0.6629m, Speed=1.4954m/s
+  @2.0s (step 40): 3D=3.5415m, Speed=2.3292m/s
+  @5.0s (step 100): 3D=14.2544m, Speed=1.2244m/s
+  @10.0s (step 200): 3D=21.6009m, Speed=2.0255m/s
 
 [6/6] Generating visualizations...
   saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_training_loss.svg
