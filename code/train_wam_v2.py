@@ -87,18 +87,18 @@ POS_INDICES = [0, 1, 2]  # position indices in state vector
 VEL_INDICES = [3, 4]     # velocity indices in state vector
 YAW_IDX = 5
 YAWRATE_IDX = 6
-OBS_STATE_INDICES = [3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+OBS_STATE_INDICES = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 OBS_INDICES = OBS_STATE_INDICES
 OBS_DIM = len(OBS_STATE_INDICES) + 2
-RESIDUAL_TARGET_INDICES = [2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-DYN_LOSS_INDICES = [2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+ACC_INDICES = [9, 10]
+RESIDUAL_TARGET_INDICES = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+DYN_LOSS_INDICES = [3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 TRAJ_LOSS_INDICES = [0, 1, 2, 5]
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
 DOWNSAMPLE = 10         # 200Hz -> 20Hz (dt = 0.05s)
 DT = 0.005 * DOWNSAMPLE # 0.05s per step
-
 TRAIN_RATIO = 0.7
 SEQ_LEN = 100           # training sequence length (5.0s @ 20Hz)
 BATCH_SIZE = 256
@@ -137,6 +137,8 @@ SAVE_EVERY = 100        # save checkpoint every N epochs
 # Cosine annealing with warm restarts (after warmup)
 COSINE_T0 = 100         # first cycle length
 COSINE_TMULT = 2        # cycle length multiplier
+
+TWO_PI = 2.0 * math.pi
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -181,27 +183,17 @@ class SSMBlock(nn.Module):
         if h is None:
             h = x.new_zeros(B, self.log_a.shape[0])
         x_norm = self.norm(x)
-        u = self.in_proj(x_norm)
-        gate = torch.sigmoid(self.gate_proj(x_norm))
-
-        a = torch.exp(-torch.exp(self.log_a))
-        b = torch.sigmoid(self.b)
-
-        time = torch.arange(T, device=x.device, dtype=x.dtype)
-        dt = (time[:, None] - time[None, :]).clamp(min=0)
-        causal = torch.tril(torch.ones(T, T, device=x.device, dtype=x.dtype))
-        kernel = torch.pow(a.view(1, 1, -1), dt.unsqueeze(-1))
-        kernel = kernel * causal.unsqueeze(-1) * b.view(1, 1, -1)
-
-        h_from_inputs = torch.einsum('tkd,bkd->btd', kernel, u)
-        h_from_init = torch.pow(a.view(1, 1, -1), (time + 1).view(1, T, 1)) * h.unsqueeze(1)
-        h_all = h_from_init + h_from_inputs
-        h_last = h_all[:, -1, :]
-
-        y = self.out_proj(torch.tanh(h_all))
-        y = self.dropout(y) * gate
-        out = self.residual(x) + y
-        return out, h_last
+        a = torch.exp(-torch.exp(self.log_a)).view(1, -1)
+        b = torch.sigmoid(self.b).view(1, -1)
+        outputs = []
+        for t in range(T):
+            u = self.in_proj(x_norm[:, t, :])
+            gate = torch.sigmoid(self.gate_proj(x_norm[:, t, :]))
+            h = a * h + b * u
+            y = self.out_proj(torch.tanh(h))
+            y = self.dropout(y) * gate
+            outputs.append((self.residual(x[:, t, :]) + y).unsqueeze(1))
+        return torch.cat(outputs, dim=1), h
 
     def step(self, x, h=None):
         if h is None:
@@ -296,19 +288,44 @@ class WAM(nn.Module):
         dyn = state[..., OBS_STATE_INDICES]
         return torch.cat([dyn, torch.sin(yaw), torch.cos(yaw)], dim=-1)
 
-    def _apply_transition(self, state, residual):
-        state_raw = self._denorm_state(state)
-        next_raw = state_raw.clone()
-        for i, idx in enumerate(RESIDUAL_TARGET_INDICES):
-            next_raw[..., idx] = state_raw[..., idx] + residual[..., i]
+    def _wrap_angle(self, angle):
+        return torch.remainder(angle + math.pi, TWO_PI) - math.pi
 
-        yaw = state_raw[..., YAW_IDX]
-        vx = state_raw[..., 3]
-        vy = state_raw[..., 4]
-        next_raw[..., 0] = state_raw[..., 0] + (vx * torch.cos(yaw) - vy * torch.sin(yaw)) * DT
-        next_raw[..., 1] = state_raw[..., 1] + (vx * torch.sin(yaw) + vy * torch.cos(yaw)) * DT
-        next_raw[..., YAW_IDX] = state_raw[..., YAW_IDX] + next_raw[..., YAWRATE_IDX] * DT
-        return self._norm_state(next_raw)
+    def _apply_transition(self, state, residual):
+      state_raw = self._denorm_state(state)
+      residual_map = {
+          idx: state_raw[..., idx] + residual[..., i]
+          for i, idx in enumerate(RESIDUAL_TARGET_INDICES)
+      }
+
+      ax_next = residual_map[9]
+      ay_next = residual_map[10]
+      vx_next = state_raw[..., 3] + ax_next * DT
+      vy_next = state_raw[..., 4] + ay_next * DT
+      yawrate_next = residual_map[YAWRATE_IDX]
+      yaw_next = self._wrap_angle(state_raw[..., YAW_IDX] + yawrate_next * DT)
+      posE_next = state_raw[..., 0] + (vx_next * torch.cos(yaw_next) - vy_next * torch.sin(yaw_next)) * DT
+      posN_next = state_raw[..., 1] + (vx_next * torch.sin(yaw_next) + vy_next * torch.cos(yaw_next)) * DT
+
+      components = []
+      for idx in range(self.state_dim):
+          if idx == 0:
+              components.append(posE_next.unsqueeze(-1))
+          elif idx == 1:
+              components.append(posN_next.unsqueeze(-1))
+          elif idx == 3:
+              components.append(vx_next.unsqueeze(-1))
+          elif idx == 4:
+              components.append(vy_next.unsqueeze(-1))
+          elif idx == YAW_IDX:
+              components.append(yaw_next.unsqueeze(-1))
+          elif idx in residual_map:
+              components.append(residual_map[idx].unsqueeze(-1))
+          else:
+              components.append(state_raw[..., idx:idx+1])
+
+      next_raw = torch.cat(components, dim=-1)
+      return self._norm_state(next_raw)
 
     def _init_hidden(self, batch_size, device):
         return [torch.zeros(batch_size, self.ssm_state_dim, device=device) for _ in range(self.num_layers)]
@@ -398,9 +415,8 @@ def load_multi_lap_data(raw_dir: Path, train_ratio: float, downsample: int = 1):
             df = df.iloc[::downsample].reset_index(drop=True)
         s = df[STATE_COLS].values.astype(np.float64)
         a = df[ACTION_COLS].values.astype(np.float64)
-        # Unwrap yaw angle to remove ±2π discontinuities
         yaw_idx = STATE_COLS.index("yawAngle_rad")
-        s[:, yaw_idx] = np.unwrap(s[:, yaw_idx])
+        s[:, yaw_idx] = (s[:, yaw_idx] + np.pi) % (2 * np.pi) - np.pi
         n = len(df)
         split = int(n * train_ratio)
         train_segments.append((s[:split], a[:split]))
@@ -1043,7 +1059,7 @@ def main():
                 hidden_dim=HIDDEN_DIM, dropout=DROPOUT)
     model.set_normalization(norm["s_mean"], norm["s_std"])
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"  Obs encoder input: {OBS_DIM}d (full state)")
+    print(f"  Obs encoder input: {OBS_DIM}d (dynamic-only + sin/cos yaw)")
     print(f"  SSM: d_model={D_MODEL}, layers={SSM_LAYERS}, state_dim={SSM_STATE_DIM}")
     print(f"  Decoder hidden: {HIDDEN_DIM}")
     print(f"  Parameters: {n_params:,}")
