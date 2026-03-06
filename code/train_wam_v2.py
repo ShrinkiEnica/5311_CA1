@@ -114,8 +114,8 @@ TRAJ_LOSS_INDICES = [0, 1, 2, 5]
 DOWNSAMPLE = 10         # 200Hz -> 20Hz (dt = 0.05s)
 DT = 0.005 * DOWNSAMPLE # 0.05s per step
 TRAIN_RATIO = 0.7
-SEQ_LEN = 100           # training sequence length (5.0s @ 20Hz)
-BATCH_SIZE = 256
+SEQ_LEN = 64            # training sequence length (3.2s @ 20Hz)
+BATCH_SIZE = 512
 EPOCHS = 200
 LR = 3e-4
 WEIGHT_DECAY = 1e-5
@@ -131,17 +131,17 @@ VEL_WEIGHT_VAL = 5.0    # velocity loss weight
 DREAM_STEPS = 400       # dream rollout length for evaluation (20s @ 20Hz)
 
 # Scheduled Sampling
-SS_START_EPOCH = 5
-SS_END_EPOCH = 200
-SS_MAX_RATIO = 0.5
+SS_START_EPOCH = 15
+SS_END_EPOCH = 140
+SS_MAX_RATIO = 0.2
 
 # Curriculum Learning: rollout steps grow during training
 ROLLOUT_MIN = 5         # start with 5-step rollout (0.25s)
-ROLLOUT_MAX = 80        # grow to 80-step rollout (4.0s)
-ROLLOUT_GROW_START = 1
-ROLLOUT_GROW_END = 200  # reach max rollout by epoch 200
-ROLLOUT_WEIGHT = 0.3
-ROLLOUT_EVERY_N = 4
+ROLLOUT_MAX = 40        # grow to 40-step rollout (2.0s)
+ROLLOUT_GROW_START = 20
+ROLLOUT_GROW_END = 160  # reach max rollout by epoch 160
+ROLLOUT_WEIGHT = 0.15
+ROLLOUT_EVERY_N = 10
 TRAJ_LOSS_W_START = 0.2
 TRAJ_LOSS_W_END = 1.0
 TRAJ_LOSS_RAMP_END = 160
@@ -274,6 +274,7 @@ class WAM(nn.Module):
         self.ssm_state_dim = ssm_state_dim
         self.residual_dim = len(RESIDUAL_TARGET_INDICES)
         self.temporal_backend = "mamba" if MAMBA_AVAILABLE else "fallback_ssm"
+        self._backend_checked = False
 
         self.register_buffer("s_mean", torch.zeros(state_dim))
         self.register_buffer("s_std", torch.ones(state_dim))
@@ -290,11 +291,7 @@ class WAM(nn.Module):
             nn.GELU(),
         )
 
-        temporal_cls = MambaBlock if MAMBA_AVAILABLE else SSMBlock
-        self.temporal = nn.ModuleList([
-            temporal_cls(d_model=d_model, state_dim=ssm_state_dim, dropout=dropout)
-            for _ in range(num_layers)
-        ])
+        self.temporal = self._build_temporal_stack(self.temporal_backend, d_model, ssm_state_dim, dropout)
 
         self.decoder_fc1 = nn.Linear(d_model, hidden_dim)
         self.decoder_ln = nn.LayerNorm(hidden_dim)
@@ -311,6 +308,52 @@ class WAM(nn.Module):
         h = h + torch.nn.functional.gelu(self.decoder_fc2(h))  # skip
         h = self.decoder_drop(h)
         return self.decoder_out(h)
+
+    def _build_temporal_stack(self, backend, d_model, ssm_state_dim, dropout):
+        temporal_cls = MambaBlock if backend == "mamba" else SSMBlock
+        return nn.ModuleList([
+            temporal_cls(d_model=d_model, state_dim=ssm_state_dim, dropout=dropout)
+            for _ in range(self.num_layers)
+        ])
+
+    def _should_fallback_from_exception(self, exc):
+        message = str(exc).lower()
+        return (
+            self.temporal_backend == "mamba"
+            and (
+                "no kernel image is available" in message
+                or "no kernel image is available for execution on the device" in message
+                or "cuda error" in message and "kernel image" in message
+            )
+        )
+
+    def _switch_to_fallback_ssm(self, device):
+        print("  Mamba CUDA kernel unavailable on this GPU, falling back to PyTorch SSM.", flush=True)
+        self.temporal_backend = "fallback_ssm"
+        self.temporal = self._build_temporal_stack("fallback_ssm", self.d_model, self.ssm_state_dim, self.decoder_drop.p).to(device)
+        self._backend_checked = True
+
+    def _run_temporal_layers(self, z, hidden, step_mode=False):
+        new_hidden = []
+        for layer, h in zip(self.temporal, hidden):
+            if step_mode:
+                z, h_new = layer.step(z, h)
+            else:
+                z, h_new = layer(z, h)
+            new_hidden.append(h_new)
+        return z, new_hidden
+
+    def _run_temporal_with_fallback(self, z, hidden, step_mode=False):
+        try:
+            z, new_hidden = self._run_temporal_layers(z, hidden, step_mode=step_mode)
+            self._backend_checked = True
+            return z, new_hidden
+        except RuntimeError as exc:
+            if not self._should_fallback_from_exception(exc):
+                raise
+            self._switch_to_fallback_ssm(z.device)
+            hidden = self._init_hidden(z.size(0), z.device)
+            return self._run_temporal_layers(z, hidden, step_mode=step_mode)
 
     def set_normalization(self, s_mean, s_std):
         self.s_mean.copy_(torch.as_tensor(s_mean, dtype=torch.float32))
@@ -340,12 +383,14 @@ class WAM(nn.Module):
 
       ax_next = residual_map[9]
       ay_next = residual_map[10]
+      az_next = residual_map[11]
       vx_next = state_raw[..., 3] + ax_next * DT
       vy_next = state_raw[..., 4] + ay_next * DT
       yawrate_next = residual_map[YAWRATE_IDX]
       yaw_next = self._wrap_angle(state_raw[..., YAW_IDX] + yawrate_next * DT)
       posE_next = state_raw[..., 0] + (vx_next * torch.cos(yaw_next) - vy_next * torch.sin(yaw_next)) * DT
       posN_next = state_raw[..., 1] + (vx_next * torch.sin(yaw_next) + vy_next * torch.cos(yaw_next)) * DT
+      posU_next = state_raw[..., 2] + 0.5 * az_next * (DT ** 2)
 
       components = []
       for idx in range(self.state_dim):
@@ -353,6 +398,8 @@ class WAM(nn.Module):
               components.append(posE_next.unsqueeze(-1))
           elif idx == 1:
               components.append(posN_next.unsqueeze(-1))
+          elif idx == 2:
+              components.append(posU_next.unsqueeze(-1))
           elif idx == 3:
               components.append(vx_next.unsqueeze(-1))
           elif idx == 4:
@@ -385,10 +432,7 @@ class WAM(nn.Module):
         if hidden is None:
             hidden = self._init_hidden(B, z.device)
 
-        new_hidden = []
-        for layer, h in zip(self.temporal, hidden):
-            z, h_new = layer(z, h)
-            new_hidden.append(h_new)
+        z, new_hidden = self._run_temporal_with_fallback(z, hidden, step_mode=False)
 
         residual = self._decode(z)
         next_states = self._apply_transition(states, residual)
@@ -403,10 +447,7 @@ class WAM(nn.Module):
         if hidden is None:
             hidden = self._init_hidden(z.size(0), z.device)
 
-        new_hidden = []
-        for layer, h in zip(self.temporal, hidden):
-            z, h_new = layer.step(z, h)
-            new_hidden.append(h_new)
+        z, new_hidden = self._run_temporal_with_fallback(z, hidden, step_mode=True)
 
         residual = self._decode(z)
         next_state = self._apply_transition(state, residual)
@@ -535,6 +576,9 @@ def forward_with_scheduled_sampling(model, states, actions, s_next_gt, ss_ratio,
     """
     Forward pass with single-pass recurrent scheduled sampling.
     """
+    if ss_ratio <= 0.0:
+        return model(states, actions)
+
     B, T, sd = states.shape
     hidden = None
     current_state = states[:, 0, :]
@@ -640,14 +684,16 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"],
                                   weight_decay=config["weight_decay"])
+    amp_enabled = device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
     # Warmup + Cosine Annealing
-    def lr_lambda(epoch):
-        if epoch < WARMUP_EPOCHS:
-            return (epoch + 1) / WARMUP_EPOCHS
-        else:
-            # Cosine annealing after warmup
-            epoch_after_warmup = epoch - WARMUP_EPOCHS
-            return 0.5 * (1 + math.cos(math.pi * epoch_after_warmup / (EPOCHS - WARMUP_EPOCHS)))
+    total_epochs = config["epochs"]
+    def lr_lambda(epoch_idx):
+        if epoch_idx < WARMUP_EPOCHS:
+            return (epoch_idx + 1) / WARMUP_EPOCHS
+        epoch_after_warmup = epoch_idx - WARMUP_EPOCHS
+        cosine_span = max(1, total_epochs - WARMUP_EPOCHS)
+        return 0.5 * (1 + math.cos(math.pi * epoch_after_warmup / cosine_span))
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     dyn_weight = torch.ones(len(DYN_LOSS_INDICES), device=device)
@@ -676,25 +722,29 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
             s, a, s_next = s.to(device), a.to(device), s_next.to(device)
             optimizer.zero_grad()
 
-            pred, _ = forward_with_scheduled_sampling(
-                model, s, a, s_next, ss_ratio, device)
-            dyn_loss, traj_loss = compute_losses(pred, s_next, dyn_weight, traj_weight)
-            loss_tf = dyn_loss + traj_scale * traj_loss
+            with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
+                pred, _ = forward_with_scheduled_sampling(
+                    model, s, a, s_next, ss_ratio, device)
+                dyn_loss, traj_loss = compute_losses(pred, s_next, dyn_weight, traj_weight)
+                loss_tf = dyn_loss + traj_scale * traj_loss
 
-            if batch_idx % ROLLOUT_EVERY_N == 0:
-                loss_rollout = compute_rollout_loss(
-                    model, s, a, s_next, rollout_k, traj_weight, device)
-                loss = loss_tf + ROLLOUT_WEIGHT * loss_rollout
-            else:
-                loss = loss_tf
+                do_rollout = epoch >= ROLLOUT_GROW_START and (batch_idx % ROLLOUT_EVERY_N == 0)
+                if do_rollout:
+                    loss_rollout = compute_rollout_loss(
+                        model, s, a, s_next, rollout_k, traj_weight, device)
+                    loss = loss_tf + ROLLOUT_WEIGHT * loss_rollout
+                else:
+                    loss = loss_tf
 
-            loss.backward()
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            scheduler.step()
+            scaler.step(optimizer)
+            scaler.update()
             train_losses.append(loss.item())
 
         train_loss = np.mean(train_losses)
+        scheduler.step()
 
         # ---- Validate (teacher forcing for logging) ----
         model.eval()
@@ -702,9 +752,10 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
         with torch.no_grad():
             for s, a, s_next in val_loader:
                 s, a, s_next = s.to(device), a.to(device), s_next.to(device)
-                pred, _ = model(s, a)
-                dyn_loss, traj_loss = compute_losses(pred, s_next, dyn_weight, traj_weight)
-                loss = dyn_loss + traj_scale * traj_loss
+                with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
+                    pred, _ = model(s, a)
+                    dyn_loss, traj_loss = compute_losses(pred, s_next, dyn_weight, traj_weight)
+                    loss = dyn_loss + traj_scale * traj_loss
                 val_losses.append(loss.item())
         val_loss = np.mean(val_losses)
 
@@ -1090,9 +1141,11 @@ def main():
     train_ds = MultiLapSequenceDataset(train_segs, SEQ_LEN)
     val_ds = MultiLapSequenceDataset(val_segs, SEQ_LEN)
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,
-                              num_workers=2, pin_memory=True)
+                              num_workers=8, pin_memory=True,
+                              persistent_workers=True, prefetch_factor=4)
     val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False,
-                            num_workers=2, pin_memory=True)
+                            num_workers=8, pin_memory=True,
+                            persistent_workers=True, prefetch_factor=4)
 
     print(f"  State dim: {STATE_DIM}, Obs dim: {OBS_DIM}, Action dim: {ACTION_DIM}")
     print(f"  Seq len: {SEQ_LEN} ({SEQ_LEN * DT:.1f}s)")

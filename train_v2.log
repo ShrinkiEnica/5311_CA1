@@ -18,97 +18,24 @@ WAM v2 — World Action Model with Temporal Dynamics
     Lap_9: 2891 pts (ds=10) -> train=2023, val=868
   Total: train=16515, val=7087 (10 laps)
   State dim: 17, Obs dim: 13, Action dim: 6
-  Seq len: 100 (5.0s)
-  Train sequences: 15515
-  Val sequences: 6087
-  Scheduled Sampling: epoch 5-200, max=0.5
-  Curriculum rollout: 5->80 steps (0.2s->4.0s), weight=0.3
+  Seq len: 64 (3.2s)
+  Train sequences: 15875
+  Val sequences: 6447
+  Scheduled Sampling: epoch 15-140, max=0.2
+  Curriculum rollout: 5->40 steps (0.2s->2.0s), weight=0.15
   Dream val: 400 steps (20.0s) every 10 epochs
   No early stopping. Checkpoints every 100 epochs.
   Device: cuda
 
 [2/6] Building WAM v2...
   Obs encoder input: 13d (dynamic-only + sin/cos yaw)
+  Temporal backend: mamba
   SSM: d_model=128, layers=4, state_dim=128
   Decoder hidden: 256
-  Parameters: 371,595
+  Parameters: 916,363
 
 [3/6] Training with curriculum rollout + scheduled sampling...
-  Epoch   1/300 | train=0.373543 | val=0.265582 | dream=427.14m | rollout_k=5 | lr=2.8e-04 | ss=0.00 *
-  Epoch  10/300 | train=0.195997 | val=0.203997 | dream=112.78m | rollout_k=7 | lr=3.0e-04 | ss=0.01 *
-  Epoch  20/300 | train=0.184359 | val=0.206746 | dream=59.37m | rollout_k=9 | lr=2.8e-04 | ss=0.04 *
-  Epoch  30/300 | train=0.175392 | val=0.215228 | dream=43.56m | rollout_k=12 | lr=2.5e-04 | ss=0.06 *
-  Epoch  40/300 | train=0.166442 | val=0.221414 | dream=80.75m | rollout_k=14 | lr=2.1e-04 | ss=0.09
-  Epoch  50/300 | train=0.159087 | val=0.230848 | dream=148.53m | rollout_k=17 | lr=1.6e-04 | ss=0.12
-  Epoch  60/300 | train=0.152862 | val=0.247526 | dream=141.85m | rollout_k=19 | lr=1.1e-04 | ss=0.14
-  Epoch  70/300 | train=0.149576 | val=0.260958 | dream=149.20m | rollout_k=22 | lr=6.6e-05 | ss=0.17
-  Epoch  80/300 | train=0.146929 | val=0.266457 | dream=197.31m | rollout_k=24 | lr=3.1e-05 | ss=0.19
-  Epoch  90/300 | train=0.146630 | val=0.273369 | dream=210.62m | rollout_k=27 | lr=7.9e-06 | ss=0.22
-  Epoch 100/300 | train=0.146986 | val=0.276605 | dream=201.66m | rollout_k=29 | lr=0.0e+00 | ss=0.24
-  Epoch 110/300 | train=0.148725 | val=0.279546 | dream=209.06m | rollout_k=32 | lr=7.9e-06 | ss=0.27
-  Epoch 120/300 | train=0.150825 | val=0.282159 | dream=207.68m | rollout_k=34 | lr=3.1e-05 | ss=0.29
-  Epoch 130/300 | train=0.153929 | val=0.284800 | dream=192.97m | rollout_k=37 | lr=6.6e-05 | ss=0.32
-  Epoch 140/300 | train=0.157068 | val=0.284728 | dream=198.02m | rollout_k=39 | lr=1.1e-04 | ss=0.35
-  Epoch 150/300 | train=0.161737 | val=0.282920 | dream=193.91m | rollout_k=42 | lr=1.6e-04 | ss=0.37
-  Epoch 160/300 | train=0.166850 | val=0.287038 | dream=203.78m | rollout_k=44 | lr=2.1e-04 | ss=0.40
-  Epoch 170/300 | train=0.172848 | val=0.282966 | dream=144.86m | rollout_k=47 | lr=2.5e-04 | ss=0.42
-  Epoch 180/300 | train=0.177576 | val=0.284391 | dream=205.57m | rollout_k=49 | lr=2.8e-04 | ss=0.45
-  Epoch 190/300 | train=0.190424 | val=0.278999 | dream=172.19m | rollout_k=52 | lr=3.0e-04 | ss=0.47
-  Epoch 200/300 | train=0.191996 | val=0.276562 | dream=188.10m | rollout_k=54 | lr=3.0e-04 | ss=0.50
-  Epoch 210/300 | train=0.195131 | val=0.281126 | dream=187.85m | rollout_k=57 | lr=2.9e-04 | ss=0.50
-  Epoch 220/300 | train=0.196442 | val=0.284050 | dream=202.26m | rollout_k=59 | lr=2.6e-04 | ss=0.50
-  Epoch 230/300 | train=0.197761 | val=0.286126 | dream=232.14m | rollout_k=62 | lr=2.2e-04 | ss=0.50
-  Epoch 240/300 | train=0.196622 | val=0.287365 | dream=204.73m | rollout_k=64 | lr=1.7e-04 | ss=0.50
-  Epoch 250/300 | train=0.198621 | val=0.283801 | dream=199.17m | rollout_k=67 | lr=1.3e-04 | ss=0.50
-  Epoch 260/300 | train=0.198424 | val=0.285968 | dream=189.98m | rollout_k=69 | lr=8.0e-05 | ss=0.50
-  Epoch 270/300 | train=0.201130 | val=0.285549 | dream=196.56m | rollout_k=72 | lr=4.1e-05 | ss=0.50
-  Epoch 280/300 | train=0.203523 | val=0.286209 | dream=189.33m | rollout_k=74 | lr=1.4e-05 | ss=0.50
-  Epoch 290/300 | train=0.205348 | val=0.286448 | dream=191.77m | rollout_k=77 | lr=8.8e-07 | ss=0.50
-  Epoch 300/300 | train=0.209965 | val=0.285703 | dream=189.39m | rollout_k=80 | lr=3.5e-06 | ss=0.50
-  Model saved to /home/shiyuqi/CascadeProjects/wam/autodrive/models/wam_v2_best.pt
-
-[4/6] Evaluating (teacher forcing, one-step)...
-
-=======================================================
-Teacher-Forcing One-Step Evaluation (669 steps)
-=======================================================
-  3D MAE:        1.376003 m
-  3D Max Error:  2.193280 m
-  posE: MAE=1.085392 m
-  posN: MAE=0.642475 m
-  posU: MAE=0.019737 m
-
-[5/6] Evaluating (dream rollout)...
-
-=======================================================
-Dream Rollout Evaluation (400 steps = 20.0s)
-=======================================================
-  3D MAE:        43.5628 m
-  3D Max Error:  82.9819 m
-  posE: MAE=37.4572 m
-  posN: MAE=15.0824 m
-  posU: MAE=2.8207 m
-  --- Velocity ---
-  Speed MAE:     5.9665 m/s
-  Vx: MAE=2.3461 m/s
-  Vy: MAE=4.7051 m/s
-  @0.5s (step 10): 3D=10.7428m, Speed=1.5319m/s
-  @1.0s (step 20): 3D=20.1231m, Speed=3.0128m/s
-  @2.0s (step 40): 3D=32.8118m, Speed=6.5220m/s
-  @5.0s (step 100): 3D=35.6330m, Speed=9.5494m/s
-  @10.0s (step 200): 3D=58.5238m, Speed=5.6949m/s
-
-[6/6] Generating visualizations...
-  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_training_loss.html
-  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_dream_3d.html
-  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_dream_topdown.html
-  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_dream_error_vs_time.html
-  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_dream_states.html
-  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_dream_velocity.html
-  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_action_intervention.html
-
-============================================================
-Done!
-  Model:          /home/shiyuqi/CascadeProjects/wam/autodrive/models/wam_v2_best.pt
-  Visualizations: /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_*.html
-============================================================
+  Mamba CUDA kernel unavailable on this GPU, falling back to PyTorch SSM.
+  Epoch   1/200 | train=0.423806 | val=0.380610 | dream=338.81m | rollout_k=5 | lr=6.0e-05 | ss=0.00 | traj_w=0.20 *
+  Epoch  10/200 | train=0.244133 | val=0.245848 | dream=184.06m | rollout_k=5 | lr=3.0e-04 | ss=0.00 | traj_w=0.25 *
+  Epoch  20/200 | train=0.208848 | val=0.205037 | dream=73.27m | rollout_k=5 | lr=3.0e-04 | ss=0.01 | traj_w=0.30 *
