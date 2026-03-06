@@ -2,19 +2,18 @@
 WAM v2 — World Action Model with Temporal Dynamics
 
 升级要点:
-  1. 观测/输出 明确分离 (Encoder 仅接收动力学量, 不接收位置/速度)
-  2. 隐空间编码 (Latent Space Encoder/Decoder)
-  3. 时序状态空间模型 (Mamba / fallback SSM)
-  4. 残差预测 (预测 Δstate 而非绝对值)
-  5. Scheduled Sampling 训练 (Teacher-Forcing → Autoregressive 渐进过渡)
-  6. 多步 Rollout Loss
-  7. 多圈数据训练 (10 圈, ~150K 样本)
-  8. 动作干预可视化
-  9. 位置 + 速度 预测/可视化
+  1. 时序动力学后端: 纯净 PyTorch GRU 避免显存瓶颈与算子兼容问题
+  2. BPTT Rollout 训练: 修复长时自回归 Rollout 的梯度截断，使得模型真正学习长期一致性
+  3. 动力学物理先验注入: Attitude-aware Gravity Compensation & 显式积分(ax->vx, vz->posU)
+  4. 多段验证与批量生图: 训练结束后自动产出多圈 Lap 验证段的 3D/Topdown/Velocity 对比图
+  5. Curriculum Learning: 从 5 步渐进增长到 30 步的多步自回归惩罚
+  6. Delta Loss 监督: 对动态状态计算预测变化率 (Δstate) 的损失
+  7. 动作干预可视化: 验证不同方向盘/刹车输入下的未来轨迹响应
+  8. 多圈数据训练: 加载多 lap 赛道数据，拆分验证段
 
-Full State (17 dim):
+Full State (18 dim):
   posE_m, posN_m, posU_m          — 位置 (3)
-  Vx_mps, Vy_mps                  — 车体速度 (2)
+  Vx_mps, Vy_mps, Vz_mps          — 车体速度 (3)
   yawAngle_rad                    — 偏航角 (1)
   yawRate_radps                   — 偏航角速度 (1)
   rollRate_radps, pitchRate_radps — 横滚/俯仰角速度 (2)
@@ -22,7 +21,7 @@ Full State (17 dim):
   slipAngle_rad                   — 侧滑角 (1)
   wheelspeed_fl/fr/rl/rr          — 四轮轮速 (4)
 
-Observation (13 dim) — Encoder 输入:
+Observation (13 dim) — Obs Encoder 输入:
   动态状态子集 (11) + sin(yaw) + cos(yaw)
 
 Action (6 dim):
@@ -31,7 +30,8 @@ Action (6 dim):
   brakeCmd_fl/fr/rl/rr_bar        — 四轮制动指令 (4)
 
 Prediction Output:
-  下一时刻完整状态；重点评估位置 (3) 与速度 (2)
+  下一时刻完整状态；预测基于 GRU 的隐状态 (h_t) 和当前控制 (a_t)
+  重点评估三维位置漂移 (dist_3d) 与三维速度匹配 (Vx/Vy/Vz)
 
 Transition:  s_{t+1} = Transition(s_t, obs_t, a_t, h_t)
 Dream:       给定初始状态 + 动作序列, 自回归推演未来轨迹
@@ -55,12 +55,8 @@ try:
     from mamba_ssm import Mamba as MambaLayer
     MAMBA_AVAILABLE = True
 except ImportError:
-    try:
-        from mamba_ssm.modules.mamba_simple import Mamba as MambaLayer
-        MAMBA_AVAILABLE = True
-    except ImportError:
-        MambaLayer = None
-        MAMBA_AVAILABLE = False
+    MambaLayer = None
+    MAMBA_AVAILABLE = False
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
 
@@ -104,11 +100,11 @@ VZ_IDX = 5
 YAW_IDX = 6
 YAWRATE_IDX = 7
 SLIP_IDX = 13
-OBS_STATE_INDICES = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+OBS_STATE_INDICES = [3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 OBS_INDICES = OBS_STATE_INDICES
 OBS_DIM = len(OBS_STATE_INDICES) + 2
 ACC_INDICES = [10, 11, 12]
-RESIDUAL_TARGET_INDICES = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+RESIDUAL_TARGET_INDICES = [3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 DYN_LOSS_INDICES = [3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 TRAJ_LOSS_INDICES = [0, 1, 2, YAW_IDX]
 ROLLOUT_DYN_LOSS_INDICES = [3, 4, 5, YAWRATE_IDX, SLIP_IDX]
@@ -127,7 +123,7 @@ DT = 0.005 * DOWNSAMPLE # 0.05s per step
 TRAIN_RATIO = 0.7
 SEQ_LEN = 64            # training sequence length (3.2s @ 20Hz)
 BATCH_SIZE = 512
-EPOCHS = 200
+EPOCHS = 500
 LR = 3e-4
 WEIGHT_DECAY = 1e-5
 D_MODEL = 96            # ssm model dimension
@@ -141,14 +137,9 @@ POS_WEIGHT_VAL = 10.0   # position loss weight
 VEL_WEIGHT_VAL = 5.0    # velocity loss weight
 DREAM_STEPS = 400       # dream rollout length for evaluation (20s @ 20Hz)
 
-# Scheduled Sampling
-SS_START_EPOCH = 15
-SS_END_EPOCH = 100
-SS_MAX_RATIO = 0.06
-
 # Curriculum Learning: rollout steps grow during training
 ROLLOUT_MIN = 5         # start with 5-step rollout (0.25s)
-ROLLOUT_MAX = 18        # grow to 18-step rollout (0.9s)
+ROLLOUT_MAX = 30        # grow to 30-step rollout (1.5s)
 ROLLOUT_GROW_START = 20
 ROLLOUT_GROW_END = 100  # reach max rollout by epoch 100
 ROLLOUT_WEIGHT = 0.15
@@ -163,6 +154,7 @@ STATE_CLIP_MARGIN = 0.1
 DREAM_VAL_STEPS = 400   # 20s dream for validation metric (match eval)
 DREAM_VAL_EVERY = 10    # evaluate dream every N epochs
 SAVE_EVERY = 100        # save checkpoint every N epochs
+DREAM_PLOT_SEGMENTS = 4 # number of validation segments to visualize after training
 
 # Cosine annealing with warm restarts (after warmup)
 COSINE_T0 = 100         # first cycle length
@@ -184,8 +176,9 @@ class SequenceDataset(Dataset):
     """Sliding window dataset for sequential WAM training."""
 
     def __init__(self, states: np.ndarray, actions: np.ndarray, seq_len: int):
-        self.states = torch.tensor(states, dtype=torch.float32)
-        self.actions = torch.tensor(actions, dtype=torch.float32)
+        # Keep data on CPU, let DataLoader pin_memory handle it asynchronously
+        self.states = torch.as_tensor(states, dtype=torch.float32)
+        self.actions = torch.as_tensor(actions, dtype=torch.float32)
         self.seq_len = seq_len
         self.n_samples = len(states) - seq_len
 
@@ -226,27 +219,6 @@ class GRUBlock(nn.Module):
         return self.residual(x_in) + y, h_new
 
 
-class MambaBlock(nn.Module):
-    def __init__(self, d_model: int, state_dim: int, dropout: float = 0.1):
-        super().__init__()
-        self.norm = nn.LayerNorm(d_model)
-        self.mamba = MambaLayer(d_model=d_model, d_state=state_dim, d_conv=4, expand=2)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x, h=None):
-        y = self.mamba(self.norm(x))
-        y = self.dropout(y)
-        return x + y, None
-
-    def step(self, x, h=None):
-        if h is None:
-            seq = x.unsqueeze(1)
-        else:
-            seq = torch.cat([h, x.unsqueeze(1)], dim=1)
-        y = self.mamba(self.norm(seq))
-        return seq[:, -1, :] + self.dropout(y[:, -1, :]), seq.detach()
-
-
 class WAM(nn.Module):
     """
     World Action Model v2 — State Space Model Architecture
@@ -272,8 +244,7 @@ class WAM(nn.Module):
         self.num_layers = num_layers
         self.ssm_state_dim = ssm_state_dim
         self.residual_dim = len(RESIDUAL_TARGET_INDICES)
-        self.temporal_backend = "mamba" if MAMBA_AVAILABLE else "gru"
-        self._backend_checked = False
+        self.temporal_backend = "gru"
 
         self.register_buffer("s_mean", torch.zeros(state_dim))
         self.register_buffer("s_std", torch.ones(state_dim))
@@ -292,7 +263,10 @@ class WAM(nn.Module):
             nn.GELU(),
         )
 
-        self.temporal = self._build_temporal_stack(self.temporal_backend, d_model, ssm_state_dim, dropout)
+        self.temporal = nn.ModuleList([
+            GRUBlock(d_model=d_model, state_dim=ssm_state_dim, dropout=dropout)
+            for _ in range(self.num_layers)
+        ])
 
         self.decoder_fc1 = nn.Linear(d_model, hidden_dim)
         self.decoder_ln = nn.LayerNorm(hidden_dim)
@@ -309,55 +283,6 @@ class WAM(nn.Module):
         h = h + torch.nn.functional.gelu(self.decoder_fc2(h))  # skip
         h = self.decoder_drop(h)
         return self.decoder_out(h)
-
-    def _build_temporal_stack(self, backend, d_model, ssm_state_dim, dropout):
-        if backend == "gru":
-            temporal_cls = GRUBlock
-        else:
-            temporal_cls = MambaBlock
-        return nn.ModuleList([
-            temporal_cls(d_model=d_model, state_dim=ssm_state_dim, dropout=dropout)
-            for _ in range(self.num_layers)
-        ])
-
-    def _should_fallback_from_exception(self, exc):
-        message = str(exc).lower()
-        return (
-            self.temporal_backend == "mamba"
-            and (
-                "no kernel image is available" in message
-                or "no kernel image is available for execution on the device" in message
-                or "cuda error" in message and "kernel image" in message
-            )
-        )
-
-    def _switch_to_fallback_gru(self, device):
-        print("  Mamba CUDA kernel unavailable on this GPU, falling back to standard GRU.", flush=True)
-        self.temporal_backend = "gru"
-        self.temporal = self._build_temporal_stack("gru", self.d_model, self.ssm_state_dim, self.decoder_drop.p).to(device)
-        self._backend_checked = True
-
-    def _run_temporal_layers(self, z, hidden, step_mode=False):
-        new_hidden = []
-        for layer, h in zip(self.temporal, hidden):
-            if step_mode:
-                z, h_new = layer.step(z, h)
-            else:
-                z, h_new = layer(z, h)
-            new_hidden.append(h_new)
-        return z, new_hidden
-
-    def _run_temporal_with_fallback(self, z, hidden, step_mode=False):
-        try:
-            z, new_hidden = self._run_temporal_layers(z, hidden, step_mode=step_mode)
-            self._backend_checked = True
-            return z, new_hidden
-        except RuntimeError as exc:
-            if not self._should_fallback_from_exception(exc):
-                raise
-            self._switch_to_fallback_gru(z.device)
-            hidden = self._init_hidden(z.size(0), z.device)
-            return self._run_temporal_layers(z, hidden, step_mode=step_mode)
 
     def set_normalization(self, s_mean, s_std, s_min=None, s_max=None):
         self.s_mean.copy_(torch.as_tensor(s_mean, dtype=torch.float32))
@@ -398,14 +323,14 @@ class WAM(nn.Module):
       ax_next = residual_map[10]
       ay_next = residual_map[11]
       az_next = residual_map[12]
-      vx_next = state_raw[..., 3] + ax_next * DT
-      vy_next = state_raw[..., 4] + ay_next * DT
-      roll_proxy = torch.clamp(state_raw[..., 8] * DT, min=-MAX_GRAVITY_TILT_RAD, max=MAX_GRAVITY_TILT_RAD)
-      pitch_proxy = torch.clamp(state_raw[..., 9] * DT, min=-MAX_GRAVITY_TILT_RAD, max=MAX_GRAVITY_TILT_RAD)
-      gravity_vertical = GRAVITY_MPS2 * torch.cos(roll_proxy) * torch.cos(pitch_proxy)
-      az_inertial_next = az_next - GRAVITY_COMPENSATION_RATIO * gravity_vertical
-      vz_next = state_raw[..., VZ_IDX] * VERTICAL_VEL_DAMPING + az_inertial_next * DT
       yawrate_next = residual_map[YAWRATE_IDX]
+
+      # Velocity states: we directly predict the residual \Delta V because kinematic
+      # integration (vy_next = vy + (ay - vx*r)*dt) accumulates massive error due to sensor noise and gravity components in IMU.
+      vx_next = residual_map[3]
+      vy_next = residual_map[4]
+      vz_next = residual_map[5]
+
       ax_next = self._clip_state(ax_next, 10)
       ay_next = self._clip_state(ay_next, 11)
       az_next = self._clip_state(az_next, 12)
@@ -414,8 +339,8 @@ class WAM(nn.Module):
       vz_next = self._clip_state(vz_next, VZ_IDX)
       yawrate_next = self._clip_state(yawrate_next, YAWRATE_IDX)
       yaw_next = self._wrap_angle(state_raw[..., YAW_IDX] + yawrate_next * DT)
-      posE_next = state_raw[..., 0] + (vx_next * torch.cos(yaw_next) - vy_next * torch.sin(yaw_next)) * DT
-      posN_next = state_raw[..., 1] + (vx_next * torch.sin(yaw_next) + vy_next * torch.cos(yaw_next)) * DT
+      posE_next = state_raw[..., 0] + (-vx_next * torch.sin(yaw_next) - vy_next * torch.cos(yaw_next)) * DT
+      posN_next = state_raw[..., 1] + (vx_next * torch.cos(yaw_next) - vy_next * torch.sin(yaw_next)) * DT
       posU_next = state_raw[..., 2] + 0.5 * (state_raw[..., VZ_IDX] + vz_next) * DT
       residual_map[13] = self._clip_state(residual_map[13], 13)
       for idx in [14, 15, 16, 17]:
@@ -461,7 +386,10 @@ class WAM(nn.Module):
         if hidden is None:
             hidden = self._init_hidden(B, z.device)
 
-        z, new_hidden = self._run_temporal_with_fallback(z, hidden, step_mode=False)
+        new_hidden = []
+        for layer, h in zip(self.temporal, hidden):
+            z, h_new = layer(z, h)
+            new_hidden.append(h_new)
 
         residual = self._decode(z)
         next_states = self._apply_transition(states, residual)
@@ -476,7 +404,10 @@ class WAM(nn.Module):
         if hidden is None:
             hidden = self._init_hidden(z.size(0), z.device)
 
-        z, new_hidden = self._run_temporal_with_fallback(z, hidden, step_mode=True)
+        new_hidden = []
+        for layer, h in zip(self.temporal, hidden):
+            z, h_new = layer.step(z, h)
+            new_hidden.append(h_new)
 
         residual = self._decode(z)
         next_state = self._apply_transition(state, residual)
@@ -508,12 +439,13 @@ def load_multi_lap_data(raw_dir: Path, train_ratio: float, downsample: int = 1):
     """
     Load all complete laps, downsample, split each lap 7:3 by time.
     Returns training/validation segments as lists of (state, action) arrays,
-    plus concatenated arrays for normalization.
+    plus validation metadata and concatenated arrays for normalization.
     """
     files = sorted(raw_dir.glob("VehicleDynamicsDataset_Nov2023_2023-11*.csv"))
 
     train_segments = []  # list of (states, actions) arrays
     val_segments = []
+    val_segment_names = []
     all_train_s, all_train_a = [], []
 
     for f in files:
@@ -521,6 +453,7 @@ def load_multi_lap_data(raw_dir: Path, train_ratio: float, downsample: int = 1):
         if suffix in EXCLUDE_LAPS:
             print(f"    skip {f.name} (partial lap)")
             continue
+        name = f"Lap{suffix}" if suffix else "Lap_0"
         df = pd.read_csv(f, comment="#")
         # Downsample
         if downsample > 1:
@@ -547,9 +480,9 @@ def load_multi_lap_data(raw_dir: Path, train_ratio: float, downsample: int = 1):
         split = int(n * train_ratio)
         train_segments.append((s[:split], a[:split]))
         val_segments.append((s[split:], a[split:]))
+        val_segment_names.append(name)
         all_train_s.append(s[:split])
         all_train_a.append(a[:split])
-        name = f"Lap{suffix}" if suffix else "Lap_0"
         print(f"    {name}: {n} pts (ds={downsample}) -> train={split}, val={n-split}")
 
     # Compute normalization from all training data
@@ -578,7 +511,7 @@ def load_multi_lap_data(raw_dir: Path, train_ratio: float, downsample: int = 1):
     print(f"  Total: train={total_train}, val={total_val} "
           f"({len(train_norm)} laps)")
 
-    return train_norm, val_norm, val_segments, norm
+    return train_norm, val_norm, val_segments, val_segment_names, norm
 
 
 class MultiLapSequenceDataset(Dataset):
@@ -609,43 +542,28 @@ class MultiLapSequenceDataset(Dataset):
 
 # ─── Training ────────────────────────────────────────────────────────────────
 
-def scheduled_sampling_ratio(epoch, start_epoch, end_epoch, max_ratio):
-    """Linearly increase autoregressive ratio from 0 to max_ratio."""
-    if epoch < start_epoch:
-        return 0.0
-    if epoch >= end_epoch:
-        return max_ratio
-    return max_ratio * (epoch - start_epoch) / (end_epoch - start_epoch)
-
-
-def forward_with_scheduled_sampling(model, states, actions, s_next_gt, ss_ratio, device):
-    """
-    Forward pass with single-pass recurrent scheduled sampling.
-    """
-    if ss_ratio <= 0.0:
-        return model(states, actions)
-
-    B, T, sd = states.shape
-    hidden = None
-    current_state = states[:, 0, :]
-    predictions = []
-
-    for t in range(T):
-        pred, hidden = model.step(current_state, actions[:, t, :], hidden)
-        predictions.append(pred)
-        if t < T - 1:
-            if ss_ratio > 0.0:
-                use_pred = (torch.rand(B, 1, device=device) < ss_ratio).float()
-                current_state = use_pred * pred.detach() + (1 - use_pred) * states[:, t + 1, :]
-            else:
-                current_state = states[:, t + 1, :]
-
-    return torch.stack(predictions, dim=1), hidden
-
-
-def compute_losses(pred, target, dyn_weight, traj_weight):
+def compute_losses(pred, target, dyn_weight, traj_weight, norm):
+    # Dynamics MSE
     dyn_loss = ((pred[..., DYN_LOSS_INDICES] - target[..., DYN_LOSS_INDICES]) ** 2 * dyn_weight).mean()
-    traj_loss = ((pred[..., TRAJ_LOSS_INDICES] - target[..., TRAJ_LOSS_INDICES]) ** 2 * traj_weight).mean()
+    
+    # Trajectory Loss (handle Yaw angle wrapping)
+    # Positions (0, 1, 2) use standard MSE
+    pos_diff = pred[..., 0:3] - target[..., 0:3]
+    pos_loss = (pos_diff ** 2 * traj_weight[0:3]).mean()
+    
+    # Yaw uses wrapped angular difference. MUST DO THIS IN RAW RADIANS, NOT NORMALIZED!
+    yaw_std = norm["s_std"][YAW_IDX].item()
+    pred_yaw_raw = pred[..., YAW_IDX] * yaw_std
+    target_yaw_raw = target[..., YAW_IDX] * yaw_std
+    
+    yaw_diff_raw = pred_yaw_raw - target_yaw_raw
+    yaw_diff_wrapped_raw = torch.remainder(yaw_diff_raw + math.pi, 2 * math.pi) - math.pi
+    
+    # Convert wrapped error back to normalized scale so weights apply correctly
+    yaw_diff_wrapped_norm = yaw_diff_wrapped_raw / yaw_std
+    yaw_loss = (yaw_diff_wrapped_norm ** 2 * traj_weight[3]).mean()
+    
+    traj_loss = pos_loss + yaw_loss
     return dyn_loss, traj_loss
 
 
@@ -658,7 +576,7 @@ def trajectory_loss_scale(epoch):
     return TRAJ_LOSS_W_START + frac * (TRAJ_LOSS_W_END - TRAJ_LOSS_W_START)
 
 
-def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, traj_weight, dyn_weight, device):
+def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, traj_weight, dyn_weight, norm, device):
     """
     Compute multi-step rollout loss with recurrent hidden state.
     """
@@ -680,8 +598,22 @@ def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, traj_
         pred, hidden = model.step(state, actions[:, t, :], hidden)
 
         target = s_next_gt[:, t, :]
-        traj_diff = (pred[..., TRAJ_LOSS_INDICES] - target[..., TRAJ_LOSS_INDICES]) ** 2 * traj_weight
-        rollout_traj_loss = traj_diff.mean()
+        
+        # Handle Rollout Traj Loss with angle wrapping
+        pos_diff = pred[..., 0:3] - target[..., 0:3]
+        pos_loss = (pos_diff ** 2 * traj_weight[0:3]).mean()
+        
+        yaw_std = norm["s_std"][YAW_IDX].item()
+        pred_yaw_raw = pred[..., YAW_IDX] * yaw_std
+        target_yaw_raw = target[..., YAW_IDX] * yaw_std
+        
+        yaw_diff_raw = pred_yaw_raw - target_yaw_raw
+        yaw_diff_wrapped_raw = torch.remainder(yaw_diff_raw + math.pi, 2 * math.pi) - math.pi
+        
+        yaw_diff_wrapped_norm = yaw_diff_wrapped_raw / yaw_std
+        yaw_loss = (yaw_diff_wrapped_norm ** 2 * traj_weight[3]).mean()
+        
+        rollout_traj_loss = pos_loss + yaw_loss
 
         rollout_loss = rollout_loss + rollout_traj_loss
         if ROLLOUT_DYN_WEIGHT > 0:
@@ -689,13 +621,19 @@ def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, traj_
                 dyn_weight[DYN_LOSS_INDICES.index(idx)] * ROLLOUT_DYN_LOSS_WEIGHTS.get(idx, 1.0)
                 for idx in ROLLOUT_DYN_LOSS_INDICES
             ])
-            dyn_diff = (pred[..., ROLLOUT_DYN_LOSS_INDICES] - target[..., ROLLOUT_DYN_LOSS_INDICES]) ** 2 * rollout_dyn_weight
+            
+            # Supervise delta (derivative) instead of absolute value for dynamics
+            pred_delta = pred[..., ROLLOUT_DYN_LOSS_INDICES] - state[..., ROLLOUT_DYN_LOSS_INDICES]
+            target_delta = target[..., ROLLOUT_DYN_LOSS_INDICES] - state[..., ROLLOUT_DYN_LOSS_INDICES]
+            
+            dyn_diff = (pred_delta - target_delta) ** 2 * rollout_dyn_weight
             rollout_dyn_loss = dyn_diff.mean()
             rollout_loss = rollout_loss + ROLLOUT_DYN_WEIGHT * rollout_dyn_loss
 
-        state = pred.detach()
-        if hidden is not None:
-            hidden = [h.detach() for h in hidden]
+        # CRITICAL FIX: Do NOT detach `state` and `hidden` here! 
+        # Allow gradients to backpropagate through time (BPTT) across the rollout sequence
+        # so the recurrent network actually learns to minimize accumulated errors over long horizons.
+        state = pred
 
     return rollout_loss / K
 
@@ -738,6 +676,14 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
     No early stopping — runs all epochs, saves best & periodic checkpoints."""
     device = config["device"]
     model = model.to(device)
+
+    # Compile the model to fuse operations and reduce python/cuda launch overheads
+    # This is highly effective for autoregressive step-by-step loops
+    if hasattr(torch, "compile"):
+        print("  Compiling model with torch.compile() for faster autoregressive training...", flush=True)
+        # Use mode="default" because dynamic control flow in rollout/sampling causes graph breaks
+        model = torch.compile(model, mode="default")
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"],
                                   weight_decay=config["weight_decay"])
     amp_enabled = device.type == "cuda"
@@ -760,14 +706,17 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
     traj_weight = torch.ones(len(TRAJ_LOSS_INDICES), device=device)
     traj_weight[0:3] = POS_WEIGHT_VAL
 
+    norm_tensors = {
+        "s_mean": torch.tensor(norm["s_mean"], dtype=torch.float32, device=device),
+        "s_std": torch.tensor(norm["s_std"], dtype=torch.float32, device=device),
+    }
+
     best_dream_err = float("inf")
     best_state = None
     history = {"train_loss": [], "val_loss": [], "dream_err": [],
-               "lr": [], "ss_ratio": [], "rollout_k": []}
+               "lr": [], "rollout_k": []}
 
     for epoch in range(1, config["epochs"] + 1):
-        ss_ratio = scheduled_sampling_ratio(
-            epoch, SS_START_EPOCH, SS_END_EPOCH, SS_MAX_RATIO)
         rollout_k = curriculum_rollout_steps(epoch)
         traj_scale = trajectory_loss_scale(epoch)
 
@@ -779,15 +728,14 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
             optimizer.zero_grad()
 
             with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
-                pred, _ = forward_with_scheduled_sampling(
-                    model, s, a, s_next, ss_ratio, device)
-                dyn_loss, traj_loss = compute_losses(pred, s_next, dyn_weight, traj_weight)
+                pred, _ = model(s, a)
+                dyn_loss, traj_loss = compute_losses(pred, s_next, dyn_weight, traj_weight, norm_tensors)
                 loss_tf = dyn_loss + traj_scale * traj_loss
 
                 do_rollout = epoch >= ROLLOUT_GROW_START and (batch_idx % ROLLOUT_EVERY_N == 0)
                 if do_rollout:
                     loss_rollout = compute_rollout_loss(
-                        model, s, a, s_next, rollout_k, traj_weight, dyn_weight, device)
+                        model, s, a, s_next, rollout_k, traj_weight, dyn_weight, norm_tensors, device)
                     loss = loss_tf + ROLLOUT_WEIGHT * loss_rollout
                 else:
                     loss = loss_tf
@@ -810,7 +758,7 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
                 s, a, s_next = s.to(device), a.to(device), s_next.to(device)
                 with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
                     pred, _ = model(s, a)
-                    dyn_loss, traj_loss = compute_losses(pred, s_next, dyn_weight, traj_weight)
+                    dyn_loss, traj_loss = compute_losses(pred, s_next, dyn_weight, traj_weight, norm_tensors)
                     loss = dyn_loss + traj_scale * traj_loss
                 val_losses.append(loss.item())
         val_loss = np.mean(val_losses)
@@ -827,7 +775,6 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
         history["val_loss"].append(val_loss)
         history["dream_err"].append(d_err)
         history["lr"].append(current_lr)
-        history["ss_ratio"].append(ss_ratio)
         history["rollout_k"].append(rollout_k)
 
         # Save best model by dream error
@@ -852,7 +799,7 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
             print(f"  Epoch {epoch:3d}/{config['epochs']} | "
                   f"train={train_loss:.6f} | val={val_loss:.6f} | "
                   f"dream={d_err:.2f}m | rollout_k={rollout_k} | "
-                  f"lr={current_lr:.1e} | ss={ss_ratio:.2f} | traj_w={traj_scale:.2f}{marker}",
+                  f"lr={current_lr:.1e} | traj_w={traj_scale:.2f}{marker}",
                   flush=True)
 
         # # ---- Early stopping (DISABLED) ----
@@ -926,6 +873,10 @@ def evaluate_dream(model, s_val_n, a_val_n, s_val_raw, norm, device, dream_steps
     return pred_raw, gt_raw, errors, dist_3d
 
 
+def sanitize_stem_suffix(label: str) -> str:
+    return label.lower().replace(" ", "_").replace("/", "_")
+
+
 def evaluate_teacher_forcing(model, s_val_n, a_val_n, s_val_raw, norm, device):
     """Evaluate one-step prediction accuracy with teacher forcing."""
     model.eval()
@@ -962,6 +913,7 @@ def evaluate_teacher_forcing(model, s_val_n, a_val_n, s_val_raw, norm, device):
 # ─── Visualization ───────────────────────────────────────────────────────────
 
 def save_figure(fig, out_dir: Path, stem: str, keep_html: bool = False):
+    out_dir.mkdir(parents=True, exist_ok=True)
     if keep_html:
         out = out_dir / f"{stem}.html"
         fig.write_html(str(out), include_plotlyjs="cdn")
@@ -994,7 +946,7 @@ def plot_training_history(history, out_dir: Path):
     save_figure(fig, out_dir, "wam_v2_training_loss")
 
 
-def plot_dream_3d(pred_raw, gt_raw, out_dir: Path):
+def plot_dream_3d(pred_raw, gt_raw, out_dir: Path, stem_suffix: str = "", title_suffix: str = ""):
     """3D dream rollout vs ground truth."""
     fig = go.Figure()
     ds = 5
@@ -1015,17 +967,17 @@ def plot_dream_3d(pred_raw, gt_raw, out_dir: Path):
         name="Start",
     ))
     fig.update_layout(
-        title=f"WAM v2 Dream Rollout ({len(gt_raw)} steps = {len(gt_raw)*DT:.1f}s)",
+        title=f"WAM v2 Dream Rollout{title_suffix} ({len(gt_raw)} steps = {len(gt_raw)*DT:.1f}s)",
         scene=dict(
             xaxis_title="East (m)", yaxis_title="North (m)", zaxis_title="Up (m)",
             aspectmode="manual", aspectratio=dict(x=1, y=1, z=0.15),
         ),
         width=1100, height=800,
     )
-    save_figure(fig, out_dir, "wam_v2_dream_3d", keep_html=True)
+    save_figure(fig, out_dir, f"wam_v2_dream_3d{stem_suffix}", keep_html=True)
 
 
-def plot_dream_topdown(pred_raw, gt_raw, out_dir: Path):
+def plot_dream_topdown(pred_raw, gt_raw, out_dir: Path, stem_suffix: str = "", title_suffix: str = ""):
     """Top-down dream comparison."""
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -1042,29 +994,29 @@ def plot_dream_topdown(pred_raw, gt_raw, out_dir: Path):
         text=["START"], textposition="top center", name="Start",
     ))
     fig.update_layout(
-        title="WAM v2 Dream Rollout (Top-Down)",
+        title=f"WAM v2 Dream Rollout (Top-Down){title_suffix}",
         xaxis_title="East (m)", yaxis_title="North (m)",
         width=1000, height=800,
         yaxis_scaleanchor="x", yaxis_scaleratio=1,
     )
-    save_figure(fig, out_dir, "wam_v2_dream_topdown")
+    save_figure(fig, out_dir, f"wam_v2_dream_topdown{stem_suffix}")
 
 
-def plot_dream_error_over_time(dist_3d, out_dir: Path):
+def plot_dream_error_over_time(dist_3d, out_dir: Path, stem_suffix: str = "", title_suffix: str = ""):
     """3D error accumulation over dream horizon."""
     t = np.arange(len(dist_3d)) * DT  # seconds
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=t, y=dist_3d, mode="lines",
                              name="3D Error", line=dict(color="purple", width=2)))
     fig.update_layout(
-        title="Dream Rollout: 3D Position Error vs Time",
+        title=f"Dream Rollout: 3D Position Error vs Time{title_suffix}",
         xaxis_title="Time Horizon (s)", yaxis_title="3D Error (m)",
         width=900, height=400,
     )
-    save_figure(fig, out_dir, "wam_v2_dream_error_vs_time")
+    save_figure(fig, out_dir, f"wam_v2_dream_error_vs_time{stem_suffix}")
 
 
-def plot_state_comparison(pred_raw, gt_raw, out_dir: Path):
+def plot_state_comparison(pred_raw, gt_raw, out_dir: Path, stem_suffix: str = "", title_suffix: str = ""):
     """Compare all predicted state dimensions vs ground truth."""
     t = np.arange(len(gt_raw)) * DT
     state_names = STATE_COLS
@@ -1081,13 +1033,13 @@ def plot_state_comparison(pred_raw, gt_raw, out_dir: Path):
                                  line=dict(color="red", width=1, dash="dash"),
                                  showlegend=(i == 0)), row=row, col=1)
     fig.update_layout(
-        title="WAM v2 Dream: All State Dimensions",
-        height=250 * n, width=1100,
+        title=f"WAM v2 Dream: All State Dimensions{title_suffix}",
+        height=max(2200, n * 180), width=1400,
     )
-    save_figure(fig, out_dir, "wam_v2_dream_states")
+    save_figure(fig, out_dir, f"wam_v2_state_comparison{stem_suffix}")
 
 
-def plot_dream_velocity(pred_raw, gt_raw, out_dir: Path):
+def plot_dream_velocity(pred_raw, gt_raw, out_dir: Path, stem_suffix: str = "", title_suffix: str = ""):
     """Compare predicted vs actual velocity (Vx, Vy, Vz) during dream rollout."""
     t = np.arange(len(gt_raw)) * DT
     vel_names = ["Vx_mps", "Vy_mps", "Vz_mps"]
@@ -1113,10 +1065,10 @@ def plot_dream_velocity(pred_raw, gt_raw, out_dir: Path):
                              showlegend=False), row=4, col=1)
 
     fig.update_layout(
-        title="WAM v2 Dream: Velocity Prediction vs Ground Truth",
+        title=f"WAM v2 Dream: Velocity Prediction vs Ground Truth{title_suffix}",
         height=900, width=1100,
     )
-    save_figure(fig, out_dir, "wam_v2_dream_velocity")
+    save_figure(fig, out_dir, f"wam_v2_dream_velocity{stem_suffix}")
 
 
 def plot_action_intervention(model, s_val_n, a_val_n, norm, device, out_dir: Path):
@@ -1192,27 +1144,31 @@ def main():
     # 1) Load multi-lap data
     print(f"\n[1/6] Loading multi-lap data (downsample={DOWNSAMPLE}, "
           f"dt={DT:.3f}s = {1/DT:.0f}Hz)...")
-    train_segs, val_segs, val_raw_segs, norm = load_multi_lap_data(
+    train_segs, val_segs, val_raw_segs, val_seg_names, norm = load_multi_lap_data(
         RAW_DIR, TRAIN_RATIO, downsample=DOWNSAMPLE)
 
     train_ds = MultiLapSequenceDataset(train_segs, SEQ_LEN)
     val_ds = MultiLapSequenceDataset(val_segs, SEQ_LEN)
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,
-                              num_workers=8, pin_memory=True,
-                              persistent_workers=True, prefetch_factor=4)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False,
-                            num_workers=8, pin_memory=True,
-                            persistent_workers=True, prefetch_factor=4)
+    train_loader = DataLoader(
+        train_ds, batch_size=BATCH_SIZE,
+        shuffle=True, drop_last=True,
+        num_workers=4, pin_memory=True, persistent_workers=True, prefetch_factor=2
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=BATCH_SIZE,
+        shuffle=False, drop_last=False,
+        num_workers=4, pin_memory=True, persistent_workers=True, prefetch_factor=2
+    )
 
     print(f"  State dim: {STATE_DIM}, Obs dim: {OBS_DIM}, Action dim: {ACTION_DIM}")
     print(f"  Seq len: {SEQ_LEN} ({SEQ_LEN * DT:.1f}s)")
     print(f"  Train sequences: {len(train_ds)}")
     print(f"  Val sequences: {len(val_ds)}")
-    print(f"  Scheduled Sampling: epoch {SS_START_EPOCH}-{SS_END_EPOCH}, max={SS_MAX_RATIO}")
     print(f"  Curriculum rollout: {ROLLOUT_MIN}->{ROLLOUT_MAX} steps "
           f"({ROLLOUT_MIN*DT:.1f}s->{ROLLOUT_MAX*DT:.1f}s), weight={ROLLOUT_WEIGHT}")
     print(f"  Dream val: {DREAM_VAL_STEPS} steps ({DREAM_VAL_STEPS*DT:.1f}s) "
           f"every {DREAM_VAL_EVERY} epochs")
+    print(f"  Dream plots: {min(DREAM_PLOT_SEGMENTS, len(val_segs))} validation segments")
     print(f"  No early stopping. Checkpoints every {SAVE_EVERY} epochs.")
     print(f"  Device: {DEVICE}")
 
@@ -1268,7 +1224,7 @@ def main():
     }, model_path)
     print(f"  Model saved to {model_path}")
 
-    # Use first validation segment (Lap_0) for evaluation
+    # Use first validation segment for single teacher-forcing evaluation
     s_val_n = val_segs[0][0]
     a_val_n = val_segs[0][1]
     s_val_raw = val_raw_segs[0][0]
@@ -1278,25 +1234,43 @@ def main():
     evaluate_teacher_forcing(model, s_val_n, a_val_n, s_val_raw, norm, DEVICE)
 
     # 5) Evaluate (dream rollout)
-    print("\n[5/6] Evaluating (dream rollout)...")
-    pred_raw, gt_raw, errors, dist_3d = evaluate_dream(
-        model, s_val_n, a_val_n, s_val_raw, norm, DEVICE, DREAM_STEPS)
+    print("\n[5/6] Evaluating (dream rollout across validation segments)...")
+    dream_results = []
+    n_dream_segments = min(DREAM_PLOT_SEGMENTS, len(val_segs))
+    for i in range(n_dream_segments):
+        seg_name = val_seg_names[i]
+        print(f"\n  Dream segment {i+1}/{n_dream_segments}: {seg_name}")
+        pred_raw, gt_raw, errors, dist_3d = evaluate_dream(
+            model, val_segs[i][0], val_segs[i][1], val_raw_segs[i][0], norm, DEVICE, DREAM_STEPS)
+        dream_results.append({
+            "name": seg_name,
+            "pred_raw": pred_raw,
+            "gt_raw": gt_raw,
+            "errors": errors,
+            "dist_3d": dist_3d,
+        })
 
     # 6) Visualize
     print("\n[6/6] Generating visualizations...")
     VIS_DIR.mkdir(parents=True, exist_ok=True)
     plot_training_history(history, VIS_DIR)
-    plot_dream_3d(pred_raw, gt_raw, VIS_DIR)
-    plot_dream_topdown(pred_raw, gt_raw, VIS_DIR)
-    plot_dream_error_over_time(dist_3d, VIS_DIR)
-    plot_state_comparison(pred_raw, gt_raw, VIS_DIR)
-    plot_dream_velocity(pred_raw, gt_raw, VIS_DIR)
+    for result in dream_results:
+        # Save per-lap plots into their own subdirectories
+        lap_name = sanitize_stem_suffix(result['name'])
+        lap_dir = VIS_DIR / lap_name
+        
+        # 3D plot is interactive HTML, the rest are SVG
+        plot_dream_3d(result["pred_raw"], result["gt_raw"], lap_dir, title_suffix=f" — {result['name']}")
+        plot_dream_topdown(result["pred_raw"], result["gt_raw"], lap_dir, title_suffix=f" — {result['name']}")
+        plot_dream_error_over_time(result["dist_3d"], lap_dir, title_suffix=f" — {result['name']}")
+        plot_state_comparison(result["pred_raw"], result["gt_raw"], lap_dir, title_suffix=f" — {result['name']}")
+        plot_dream_velocity(result["pred_raw"], result["gt_raw"], lap_dir, title_suffix=f" — {result['name']}")
     plot_action_intervention(model, s_val_n, a_val_n, norm, DEVICE, VIS_DIR)
 
     print("\n" + "=" * 60)
     print("Done!")
     print(f"  Model:          {model_path}")
-    print(f"  Visualizations: {VIS_DIR}/wam_v2_*.html")
+    print(f"  Visualizations: {VIS_DIR}/")
     print("=" * 60)
 
 

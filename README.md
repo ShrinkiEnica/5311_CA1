@@ -18,14 +18,13 @@
 | **核心脚本** | `code/train_wam_v2.py` |
 | **基线脚本** | `code/train_wam.py` |
 
-该项目当前的主线不再是单帧位置回归，而是一个**带控制输入的时序世界模型**：
+该项目当前的主线是由纯 **PyTorch GRU** 驱动的**带控制输入的时序世界动作模型 (WAM v2)**：
 
 ```text
-state_t + action_t -> state_{t+1}
+state_t + action_t + h_t -> h_{t+1} -> Δstate -> state_{t+1}
 ```
 
-模型既支持 **teacher forcing 下一步预测**，也支持 **autoregressive dream rollout**，
-并可通过动作干预实验观察未来轨迹如何随控制输入变化。
+模型通过 **BPTT (Backpropagation Through Time)** 联合 **Curriculum Rollout** 进行长序列闭环训练，极大地增强了对长时间动力学推演的稳定性。它支持 **teacher forcing 下一步预测**，以及 **autoregressive dream rollout**，并可通过动作干预实验观察未来轨迹如何随控制输入变化。
 
 ---
 
@@ -84,12 +83,12 @@ init_state + action_seq -> future trajectory
 
 ### 3.2 状态、动作与观测定义
 
-#### 状态 `state`（17 维）
+#### 状态 `state`（18 维）
 
 | 类别 | 特征 |
 |------|------|
 | **位置** | `posE_m`, `posN_m`, `posU_m` |
-| **车体速度** | `Vx_mps`, `Vy_mps` |
+| **车体速度** | `Vx_mps`, `Vy_mps`, `Vz_mps` |
 | **姿态/角速度** | `yawAngle_rad`, `yawRate_radps`, `rollRate_radps`, `pitchRate_radps` |
 | **加速度** | `axCG_mps2`, `ayCG_mps2`, `azCG_mps2` |
 | **侧滑** | `slipAngle_rad` |
@@ -121,7 +120,7 @@ init_state + action_seq -> future trajectory
 ```
 state -> observation
 observation + action -> latent
-latent -> temporal model
+latent -> temporal model (GRU)
 temporal output -> residual decoder
 residual + physics-inspired transition -> next state
 ```
@@ -134,15 +133,14 @@ residual + physics-inspired transition -> next state
 - **Action Encoder**
   - 将控制输入编码到同一 latent 空间
 
-- **Temporal Module**
-  - 优先使用 `Mamba`
-  - 如果未安装 `mamba_ssm`，则回退到自定义 `SSMBlock`
+- **Temporal Module (GRUBlock)**
+  - 使用纯净 PyTorch `nn.GRU` 进行时序建模，携带隐状态 `h_t` 传递上下文，具备极强的显存与算子兼容性。
 
 - **Residual Decoder**
   - 从时序特征解码出状态残差
 
 - **Physics-inspired Transition**
-  - 使用显式积分关系更新速度、航向和位置
+  - 使用显式积分关系结合重力先验更新速度、航向和位置
 
 ### 3.4 状态转移设计
 
@@ -156,8 +154,11 @@ residual + physics-inspired transition -> next state
 ```text
 vx_next = vx + ax_next * dt
 vy_next = vy + ay_next * dt
+vz_next = vz * damping + (az_next - gravity_z) * dt
 yaw_next = yaw + yawRate_next * dt
-pos_next = pos + R(yaw_next) * [vx_next, vy_next] * dt
+posE_next = posE + R(yaw_next) * [vx_next, vy_next] * dt
+posN_next = posN + R(yaw_next) * [vx_next, vy_next] * dt
+posU_next = posU + 0.5 * (vz + vz_next) * dt
 ```
 
 这样做的目的：
@@ -198,9 +199,9 @@ pos_next = pos + R(yaw_next) * [vx_next, vy_next] * dt
 | **下采样** | `10` |
 | **训练频率** | `20Hz` |
 | **时间步长** | `0.05s` |
-| **序列长度** | `100` steps |
-| **单段时长** | `5.0s` |
-| **Batch Size** | `256` |
+| **序列长度** | `64` steps |
+| **单段时长** | `3.2s` |
+| **Batch Size** | `512` |
 | **Epochs** | `200` |
 
 ### 4.2 训练策略
@@ -210,20 +211,19 @@ pos_next = pos + R(yaw_next) * [vx_next, vy_next] * dt
 - **Teacher Forcing**
   - 基础的一步状态转移训练
 
-- **Scheduled Sampling**
-  - 逐步增加使用模型预测状态作为下一步输入的比例
+- **BPTT Curriculum Rollout Loss**
+  - 核心自回归训练机制：将模型进行多步展开（目前配置为 5 步到 30 步），且**保持梯度不断开**。
+  - 通过 BPTT (Backpropagation Through Time) 强迫模型惩罚长周期预测时的累积误差（位置漂移与速度偏离）。
 
-- **Curriculum Rollout Loss**
-  - rollout 长度从短到长增长，逐步提升长时稳定性
+- **Delta Dynamics Loss**
+  - 在 Rollout 过程中，使用增量监督（$\Delta Vx, \Delta Vy, \Delta Vz$）来避免模型遗忘物理规律并产生跳变。
 
 - **Trajectory Loss Ramp**
-  - 随训练推进，逐步提高轨迹相关损失权重
+  - 随训练推进，逐步提高轨迹（$X, Y, Z, Yaw$）相关损失的权重。
 
-- **Gradient Clipping**
-  - 控制训练不稳定和梯度爆炸
-
-- **Dream Validation**
-  - 周期性做长时自回归验证，并用其监控模型表现
+- **Dream Validation & Checkpointing**
+  - 周期性对多个验证段（默认 4 个段）进行长达 `400` 步 (20s) 的纯梦境 Rollout。
+  - 以 Dream 状态的 3D 位置误差为主指标筛选最优模型。
 
 ### 4.3 优化配置
 
@@ -257,7 +257,7 @@ pos_next = pos + R(yaw_next) * [vx_next, vy_next] * dt
 
 ### 5.2 多步评估（Dream Rollout）
 
-从验证集初始状态出发，输入未来动作序列，做自回归 rollout，评估：
+从多个 Lap 的验证段初始状态出发，输入未来动作序列，做长时自回归 rollout（默认生成多份对比图），评估：
 
 - **3D MAE**
 - **3D Max Error**
@@ -361,13 +361,11 @@ pandas
 scipy
 plotly
 torch
-mamba_ssm   # 可选；安装后 v2 将使用 Mamba 时序层
 ```
 
 说明：
 
-- 如果未安装 `mamba_ssm`，`train_wam_v2.py` 会自动回退到自定义 `SSMBlock`
-- 这意味着项目在无 Mamba 环境下也可以运行，只是时序模块实现不同
+- `train_wam_v2.py` 已全面迁移至原生 PyTorch `nn.GRU` 进行时序建模，不再需要 `mamba_ssm`，规避了之前常见的 CUDA 算子编译错误与显存限制。
 
 ---
 
@@ -376,5 +374,5 @@ mamba_ssm   # 可选；安装后 v2 将使用 Mamba 时序层
 可以把本项目理解为：
 
 > 一个基于高频车辆动力学数据的、带控制输入的时序世界模型。
-> 当前主模型通过 observation/action 编码、时序状态空间模块和带物理先验的 transition，
+> 当前主模型通过 observation/action 编码、时序循环模块 (GRU) 和带物理先验的 transition，
 > 学习车辆状态转移，并以 autoregressive dream rollout 作为核心评估方式。
