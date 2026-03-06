@@ -85,8 +85,14 @@ ACTION_DIM = len(ACTION_COLS)  # 6
 
 POS_INDICES = [0, 1, 2]  # position indices in state vector
 VEL_INDICES = [3, 4]     # velocity indices in state vector
-OBS_INDICES = list(range(STATE_DIM))  # all 17 state dims as encoder input
-OBS_DIM = STATE_DIM  # 17
+YAW_IDX = 5
+YAWRATE_IDX = 6
+OBS_STATE_INDICES = [3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+OBS_INDICES = OBS_STATE_INDICES
+OBS_DIM = len(OBS_STATE_INDICES) + 2
+RESIDUAL_TARGET_INDICES = [2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+DYN_LOSS_INDICES = [2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+TRAJ_LOSS_INDICES = [0, 1, 2, 5]
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -225,6 +231,10 @@ class WAM(nn.Module):
         self.d_model = d_model
         self.num_layers = num_layers
         self.ssm_state_dim = ssm_state_dim
+        self.residual_dim = len(RESIDUAL_TARGET_INDICES)
+
+        self.register_buffer("s_mean", torch.zeros(state_dim))
+        self.register_buffer("s_std", torch.ones(state_dim))
 
         self.obs_encoder = nn.Sequential(
             nn.Linear(obs_dim, d_model),
@@ -246,7 +256,7 @@ class WAM(nn.Module):
         self.decoder_fc1 = nn.Linear(d_model, hidden_dim)
         self.decoder_ln = nn.LayerNorm(hidden_dim)
         self.decoder_fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.decoder_out = nn.Linear(hidden_dim, state_dim)
+        self.decoder_out = nn.Linear(hidden_dim, self.residual_dim)
         self.decoder_drop = nn.Dropout(dropout)
 
         nn.init.zeros_(self.decoder_out.bias)
@@ -259,6 +269,36 @@ class WAM(nn.Module):
         h = self.decoder_drop(h)
         return self.decoder_out(h)
 
+    def set_normalization(self, s_mean, s_std):
+        self.s_mean.copy_(torch.as_tensor(s_mean, dtype=torch.float32))
+        self.s_std.copy_(torch.as_tensor(s_std, dtype=torch.float32))
+
+    def _denorm_state(self, state):
+        return state * self.s_std + self.s_mean
+
+    def _norm_state(self, state):
+        return (state - self.s_mean) / self.s_std
+
+    def _build_obs(self, state):
+        state_raw = self._denorm_state(state)
+        yaw = state_raw[..., YAW_IDX:YAW_IDX+1]
+        dyn = state[..., OBS_STATE_INDICES]
+        return torch.cat([dyn, torch.sin(yaw), torch.cos(yaw)], dim=-1)
+
+    def _apply_transition(self, state, residual):
+        state_raw = self._denorm_state(state)
+        next_raw = state_raw.clone()
+        for i, idx in enumerate(RESIDUAL_TARGET_INDICES):
+            next_raw[..., idx] = state_raw[..., idx] + residual[..., i]
+
+        yaw = state_raw[..., YAW_IDX]
+        vx = state_raw[..., 3]
+        vy = state_raw[..., 4]
+        next_raw[..., 0] = state_raw[..., 0] + (vx * torch.cos(yaw) - vy * torch.sin(yaw)) * DT
+        next_raw[..., 1] = state_raw[..., 1] + (vx * torch.sin(yaw) + vy * torch.cos(yaw)) * DT
+        next_raw[..., YAW_IDX] = state_raw[..., YAW_IDX] + next_raw[..., YAWRATE_IDX] * DT
+        return self._norm_state(next_raw)
+
     def _init_hidden(self, batch_size, device):
         return [torch.zeros(batch_size, self.ssm_state_dim, device=device) for _ in range(self.num_layers)]
 
@@ -269,7 +309,7 @@ class WAM(nn.Module):
         actions: [B, T, action_dim]
         Returns: predicted s_{t+1} [B, T, state_dim], hidden
         """
-        obs = states[..., OBS_INDICES]
+        obs = self._build_obs(states)
         z = self.obs_encoder(obs) + self.action_encoder(actions)
         B = z.size(0)
         if hidden is None:
@@ -280,15 +320,15 @@ class WAM(nn.Module):
             z, h_new = layer(z, h)
             new_hidden.append(h_new)
 
-        delta = self._decode(z)
-        next_states = states + delta
+        residual = self._decode(z)
+        next_states = self._apply_transition(states, residual)
         return next_states, new_hidden
 
     def step(self, state, action, hidden=None):
         """
         Single autoregressive step.
         """
-        obs = state[..., OBS_INDICES]
+        obs = self._build_obs(state)
         z = self.obs_encoder(obs) + self.action_encoder(action)
         if hidden is None:
             hidden = self._init_hidden(z.size(0), z.device)
@@ -298,8 +338,8 @@ class WAM(nn.Module):
             z, h_new = layer.step(z, h)
             new_hidden.append(h_new)
 
-        delta = self._decode(z)
-        next_state = state + delta
+        residual = self._decode(z)
+        next_state = self._apply_transition(state, residual)
         return next_state, new_hidden
 
     @torch.no_grad()
@@ -422,32 +462,33 @@ def scheduled_sampling_ratio(epoch, start_epoch, end_epoch, max_ratio):
 
 def forward_with_scheduled_sampling(model, states, actions, s_next_gt, ss_ratio, device):
     """
-    Forward pass with scheduled sampling (Transformer-efficient 2-pass).
-    1) Teacher-forcing forward to get predictions.
-    2) Build mixed input where some states are replaced with predictions.
-    3) Second forward on mixed input.
+    Forward pass with single-pass recurrent scheduled sampling.
     """
     B, T, sd = states.shape
-    if ss_ratio <= 0.0:
-        # Pure teacher forcing
-        return model(states, actions)
+    hidden = None
+    current_state = states[:, 0, :]
+    predictions = []
 
-    # Pass 1: teacher-forcing to get all predictions
-    with torch.no_grad():
-        pred_tf, _ = model(states, actions)  # [B, T, sd]
+    for t in range(T):
+        pred, hidden = model.step(current_state, actions[:, t, :], hidden)
+        predictions.append(pred)
+        if t < T - 1:
+            if ss_ratio > 0.0:
+                use_pred = (torch.rand(B, 1, device=device) < ss_ratio).float()
+                current_state = use_pred * pred.detach() + (1 - use_pred) * states[:, t + 1, :]
+            else:
+                current_state = states[:, t + 1, :]
 
-    # Build mixed input: for timestep t, possibly use pred from t-1
-    mixed_states = states.clone()
-    for t in range(1, T):
-        use_pred = (torch.rand(B, 1, device=device) < ss_ratio).float()
-        mixed_states[:, t] = use_pred * pred_tf[:, t-1].detach() + \
-                             (1 - use_pred) * states[:, t]
-
-    # Pass 2: forward on mixed inputs
-    return model(mixed_states, actions)
+    return torch.stack(predictions, dim=1), hidden
 
 
-def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, pos_weight, device):
+def compute_losses(pred, target, dyn_weight, traj_weight):
+    dyn_loss = ((pred[..., DYN_LOSS_INDICES] - target[..., DYN_LOSS_INDICES]) ** 2 * dyn_weight).mean()
+    traj_loss = ((pred[..., TRAJ_LOSS_INDICES] - target[..., TRAJ_LOSS_INDICES]) ** 2 * traj_weight).mean()
+    return dyn_loss, traj_loss
+
+
+def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, traj_weight, device):
     """
     Compute multi-step rollout loss with recurrent hidden state.
     """
@@ -469,7 +510,7 @@ def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, pos_w
         pred, hidden = model.step(state, actions[:, t, :], hidden)
 
         target = s_next_gt[:, t, :]
-        diff = (pred - target) ** 2 * pos_weight
+        diff = (pred[..., TRAJ_LOSS_INDICES] - target[..., TRAJ_LOSS_INDICES]) ** 2 * traj_weight
         rollout_loss = rollout_loss + diff.mean()
 
         state = pred.detach()
@@ -529,10 +570,13 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
             return 0.5 * (1 + math.cos(math.pi * epoch_after_warmup / (EPOCHS - WARMUP_EPOCHS)))
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-    # Position + velocity weighted loss
-    pos_weight = torch.ones(STATE_DIM, device=device)
-    pos_weight[POS_INDICES] = POS_WEIGHT_VAL
-    pos_weight[VEL_INDICES] = VEL_WEIGHT_VAL
+    dyn_weight = torch.ones(len(DYN_LOSS_INDICES), device=device)
+    for i, idx in enumerate(DYN_LOSS_INDICES):
+        if idx in VEL_INDICES:
+            dyn_weight[i] = VEL_WEIGHT_VAL
+
+    traj_weight = torch.ones(len(TRAJ_LOSS_INDICES), device=device)
+    traj_weight[0:3] = POS_WEIGHT_VAL
 
     best_dream_err = float("inf")
     best_state = None
@@ -551,16 +595,14 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
             s, a, s_next = s.to(device), a.to(device), s_next.to(device)
             optimizer.zero_grad()
 
-            # Single-step loss with scheduled sampling
             pred, _ = forward_with_scheduled_sampling(
                 model, s, a, s_next, ss_ratio, device)
-            diff = (pred - s_next) ** 2 * pos_weight
-            loss_tf = diff.mean()
+            dyn_loss, traj_loss = compute_losses(pred, s_next, dyn_weight, traj_weight)
+            loss_tf = dyn_loss + traj_loss
 
-            # Curriculum rollout loss (every N batches to save time)
             if batch_idx % ROLLOUT_EVERY_N == 0:
                 loss_rollout = compute_rollout_loss(
-                    model, s, a, s_next, rollout_k, pos_weight, device)
+                    model, s, a, s_next, rollout_k, traj_weight, device)
                 loss = loss_tf + ROLLOUT_WEIGHT * loss_rollout
             else:
                 loss = loss_tf
@@ -580,8 +622,8 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
             for s, a, s_next in val_loader:
                 s, a, s_next = s.to(device), a.to(device), s_next.to(device)
                 pred, _ = model(s, a)
-                diff = (pred - s_next) ** 2 * pos_weight
-                loss = diff.mean()
+                dyn_loss, traj_loss = compute_losses(pred, s_next, dyn_weight, traj_weight)
+                loss = dyn_loss + traj_loss
                 val_losses.append(loss.item())
         val_loss = np.mean(val_losses)
 
@@ -988,6 +1030,7 @@ def main():
                 d_model=D_MODEL, num_layers=SSM_LAYERS,
                 ssm_state_dim=SSM_STATE_DIM,
                 hidden_dim=HIDDEN_DIM, dropout=DROPOUT)
+    model.set_normalization(norm["s_mean"], norm["s_std"])
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  Obs encoder input: {OBS_DIM}d (full state)")
     print(f"  SSM: d_model={D_MODEL}, layers={SSM_LAYERS}, state_dim={SSM_STATE_DIM}")
@@ -1023,6 +1066,10 @@ def main():
             "hidden_dim": HIDDEN_DIM, "dropout": DROPOUT,
             "state_cols": STATE_COLS, "action_cols": ACTION_COLS,
             "obs_indices": OBS_INDICES,
+            "obs_state_indices": OBS_STATE_INDICES,
+            "yaw_idx": YAW_IDX,
+            "yawrate_idx": YAWRATE_IDX,
+            "residual_target_indices": RESIDUAL_TARGET_INDICES,
         },
     }, model_path)
     print(f"  Model saved to {model_path}")

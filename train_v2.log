@@ -39,3 +39,10 @@ WAM v2 — World Action Model with Temporal Dynamics
   Epoch  20/300 | train=0.117210 | val=0.172361 | dream=191.97m | rollout_k=9 | lr=2.8e-04 | ss=0.04 *
   Epoch  30/300 | train=0.106021 | val=0.190244 | dream=191.57m | rollout_k=12 | lr=2.5e-04 | ss=0.06 *
   Epoch  40/300 | train=0.094595 | val=0.211256 | dream=135.72m | rollout_k=14 | lr=2.1e-04 | ss=0.09 *
+  Epoch  50/300 | train=0.085594 | val=0.221803 | dream=151.30m | rollout_k=17 | lr=1.6e-04 | ss=0.12
+  Epoch  60/300 | train=0.077961 | val=0.225233 | dream=142.39m | rollout_k=19 | lr=1.1e-04 | ss=0.14
+  Epoch  70/300 | train=0.072612 | val=0.225801 | dream=148.49m | rollout_k=22 | lr=6.6e-05 | ss=0.17
+  Epoch  80/300 | train=0.068327 | val=0.228056 | dream=144.77m | rollout_k=24 | lr=3.1e-05 | ss=0.19
+  Epoch  90/300 | train=0.065280 | val=0.225705 | dream=137.33m | rollout_k=27 | lr=7.9e-06 | ss=0.22
+  Epoch 100/300 | train=0.062388 | val=0.224960 | dream=141.61m | rollout_k=29 | lr=0.0e+00 | ss=0.24
+  Epoch 110/300 | train=0.060407 | val=0.224159 | dream=140.59m | rollout_k=32 | lr=7.9e-06 | ss=0.27
