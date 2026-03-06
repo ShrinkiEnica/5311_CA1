@@ -60,3 +60,55 @@ WAM v2 — World Action Model with Temporal Dynamics
   Epoch 230/300 | train=0.197761 | val=0.286126 | dream=232.14m | rollout_k=62 | lr=2.2e-04 | ss=0.50
   Epoch 240/300 | train=0.196622 | val=0.287365 | dream=204.73m | rollout_k=64 | lr=1.7e-04 | ss=0.50
   Epoch 250/300 | train=0.198621 | val=0.283801 | dream=199.17m | rollout_k=67 | lr=1.3e-04 | ss=0.50
+  Epoch 260/300 | train=0.198424 | val=0.285968 | dream=189.98m | rollout_k=69 | lr=8.0e-05 | ss=0.50
+  Epoch 270/300 | train=0.201130 | val=0.285549 | dream=196.56m | rollout_k=72 | lr=4.1e-05 | ss=0.50
+  Epoch 280/300 | train=0.203523 | val=0.286209 | dream=189.33m | rollout_k=74 | lr=1.4e-05 | ss=0.50
+  Epoch 290/300 | train=0.205348 | val=0.286448 | dream=191.77m | rollout_k=77 | lr=8.8e-07 | ss=0.50
+  Epoch 300/300 | train=0.209965 | val=0.285703 | dream=189.39m | rollout_k=80 | lr=3.5e-06 | ss=0.50
+  Model saved to /home/shiyuqi/CascadeProjects/wam/autodrive/models/wam_v2_best.pt
+
+[4/6] Evaluating (teacher forcing, one-step)...
+
+=======================================================
+Teacher-Forcing One-Step Evaluation (669 steps)
+=======================================================
+  3D MAE:        1.376003 m
+  3D Max Error:  2.193280 m
+  posE: MAE=1.085392 m
+  posN: MAE=0.642475 m
+  posU: MAE=0.019737 m
+
+[5/6] Evaluating (dream rollout)...
+
+=======================================================
+Dream Rollout Evaluation (400 steps = 20.0s)
+=======================================================
+  3D MAE:        43.5628 m
+  3D Max Error:  82.9819 m
+  posE: MAE=37.4572 m
+  posN: MAE=15.0824 m
+  posU: MAE=2.8207 m
+  --- Velocity ---
+  Speed MAE:     5.9665 m/s
+  Vx: MAE=2.3461 m/s
+  Vy: MAE=4.7051 m/s
+  @0.5s (step 10): 3D=10.7428m, Speed=1.5319m/s
+  @1.0s (step 20): 3D=20.1231m, Speed=3.0128m/s
+  @2.0s (step 40): 3D=32.8118m, Speed=6.5220m/s
+  @5.0s (step 100): 3D=35.6330m, Speed=9.5494m/s
+  @10.0s (step 200): 3D=58.5238m, Speed=5.6949m/s
+
+[6/6] Generating visualizations...
+  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_training_loss.html
+  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_dream_3d.html
+  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_dream_topdown.html
+  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_dream_error_vs_time.html
+  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_dream_states.html
+  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_dream_velocity.html
+  saved /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_action_intervention.html
+
+============================================================
+Done!
+  Model:          /home/shiyuqi/CascadeProjects/wam/autodrive/models/wam_v2_best.pt
+  Visualizations: /home/shiyuqi/CascadeProjects/wam/autodrive/visualization/wam_v2/wam_v2_*.html
+============================================================

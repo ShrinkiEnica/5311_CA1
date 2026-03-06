@@ -4,7 +4,7 @@ WAM v2 — World Action Model with Temporal Dynamics
 升级要点:
   1. 观测/输出 明确分离 (Encoder 仅接收动力学量, 不接收位置/速度)
   2. 隐空间编码 (Latent Space Encoder/Decoder)
-  3. GRU 时序动力学模型
+  3. 时序状态空间模型 (Mamba / fallback SSM)
   4. 残差预测 (预测 Δstate 而非绝对值)
   5. Scheduled Sampling 训练 (Teacher-Forcing → Autoregressive 渐进过渡)
   6. 多步 Rollout Loss
@@ -12,25 +12,28 @@ WAM v2 — World Action Model with Temporal Dynamics
   8. 动作干预可视化
   9. 位置 + 速度 预测/可视化
 
-Full State (10 dim) — 残差传递:
-  posE_m, posN_m, posU_m          — 位置 (3)       [OUTPUT]
-  Vx_mps, Vy_mps                  — 车体速度 (2)   [OUTPUT]
-  yawAngle_rad                    — 偏航角 (1)     [INPUT/OUTPUT]
-  yawRate_radps                   — 偏航角速度 (1) [INPUT]
-  axCG_mps2, ayCG_mps2            — 纵/横向加速度 (2) [INPUT]
-  slipAngle_rad                   — 侧滑角 (1)     [INPUT]
+Full State (17 dim):
+  posE_m, posN_m, posU_m          — 位置 (3)
+  Vx_mps, Vy_mps                  — 车体速度 (2)
+  yawAngle_rad                    — 偏航角 (1)
+  yawRate_radps                   — 偏航角速度 (1)
+  rollRate_radps, pitchRate_radps — 横滚/俯仰角速度 (2)
+  axCG_mps2, ayCG_mps2, azCG_mps2 — 纵/横/垂向加速度 (3)
+  slipAngle_rad                   — 侧滑角 (1)
+  wheelspeed_fl/fr/rl/rr          — 四轮轮速 (4)
 
-Observation (5 dim) — Encoder 输入 (不含位置/速度):
-  yawAngle_rad, yawRate_radps, axCG_mps2, ayCG_mps2, slipAngle_rad
-
-Prediction Output — 位置 (3) + 速度 (2), 给出预测 vs 实际可视化
+Observation (13 dim) — Encoder 输入:
+  动态状态子集 (11) + sin(yaw) + cos(yaw)
 
 Action (6 dim):
   roadWheelAngle_rad              — 转向角 (1)
   throttleCmd_percent             — 油门指令 (1)
   brakeCmd_fl/fr/rl/rr_bar        — 四轮制动指令 (4)
 
-Transition:  s_{t+1} = s_t + f(obs_t, a_t, h_t)
+Prediction Output:
+  下一时刻完整状态；重点评估位置 (3) 与速度 (2)
+
+Transition:  s_{t+1} = Transition(s_t, obs_t, a_t, h_t)
 Dream:       给定初始状态 + 动作序列, 自回归推演未来轨迹
 
 用法:
@@ -612,7 +615,7 @@ def dream_val_error(model, val_seg_n, dream_steps, norm, device):
 
     s_mean, s_std = norm["s_mean"], norm["s_std"]
     pred_raw = pred_n * s_std + s_mean
-    gt_raw = (s_n[:T] * s_std + s_mean)  # denorm GT
+    gt_raw = (s_n[1:T + 1] * s_std + s_mean)  # pred[t] corresponds to s[t+1]
 
     pos_err = pred_raw[:, POS_INDICES] - gt_raw[:, POS_INDICES]
     dist_3d = np.sqrt(np.sum(pos_err ** 2, axis=1))
@@ -763,6 +766,7 @@ def evaluate_dream(model, s_val_n, a_val_n, s_val_raw, norm, device, dream_steps
     """
     Evaluate with autoregressive dream rollout.
     Start from the first validation state, dream for dream_steps.
+    The first prediction is aligned against the next ground-truth state.
     """
     model.eval()
     T = min(dream_steps, len(s_val_n) - 1)
@@ -776,7 +780,7 @@ def evaluate_dream(model, s_val_n, a_val_n, s_val_raw, norm, device, dream_steps
     # Denormalize
     s_mean, s_std = norm["s_mean"], norm["s_std"]
     pred_raw = pred_n * s_std + s_mean
-    gt_raw = s_val_raw[:T]
+    gt_raw = s_val_raw[1:T + 1]
 
     # Position errors
     pos_pred = pred_raw[:, POS_INDICES]
