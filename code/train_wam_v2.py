@@ -46,6 +46,7 @@ import math
 from pathlib import Path
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -75,17 +76,17 @@ EXCLUDE_LAPS = {"_5", "_10"}
 
 STATE_COLS = [
     "posE_m", "posN_m", "posU_m",       # position (3)        [0,1,2]
-    "Vx_mps", "Vy_mps",                 # body velocity (2)   [3,4]
-    "yawAngle_rad",                      # heading (1)         [5]
-    "yawRate_radps",                     # yaw rate (1)        [6]
-    "rollRate_radps",                    # roll rate (1)       [7]
-    "pitchRate_radps",                   # pitch rate (1)      [8]
-    "axCG_mps2", "ayCG_mps2", "azCG_mps2",  # acceleration (3) [9,10,11]
-    "slipAngle_rad",                     # side slip (1)       [12]
-    "wheelspeed_fl", "wheelspeed_fr",    # wheel speed FL/FR   [13,14]
-    "wheelspeed_rl", "wheelspeed_rr",    # wheel speed RL/RR   [15,16]
+    "Vx_mps", "Vy_mps", "Vz_mps",
+    "yawAngle_rad",
+    "yawRate_radps",
+    "rollRate_radps",
+    "pitchRate_radps",
+    "axCG_mps2", "ayCG_mps2", "azCG_mps2",
+    "slipAngle_rad",
+    "wheelspeed_fl", "wheelspeed_fr",
+    "wheelspeed_rl", "wheelspeed_rr",
 ]
-STATE_DIM = len(STATE_COLS)  # 17
+STATE_DIM = len(STATE_COLS)  # 18
 
 ACTION_COLS = [
     "roadWheelAngle_rad",               # steering (1)
@@ -98,16 +99,26 @@ ACTION_COLS = [
 ACTION_DIM = len(ACTION_COLS)  # 6
 
 POS_INDICES = [0, 1, 2]  # position indices in state vector
-VEL_INDICES = [3, 4]     # velocity indices in state vector
-YAW_IDX = 5
-YAWRATE_IDX = 6
-OBS_STATE_INDICES = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+VEL_INDICES = [3, 4, 5]  # velocity indices in state vector
+VZ_IDX = 5
+YAW_IDX = 6
+YAWRATE_IDX = 7
+SLIP_IDX = 13
+OBS_STATE_INDICES = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 OBS_INDICES = OBS_STATE_INDICES
 OBS_DIM = len(OBS_STATE_INDICES) + 2
-ACC_INDICES = [9, 10]
-RESIDUAL_TARGET_INDICES = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-DYN_LOSS_INDICES = [3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-TRAJ_LOSS_INDICES = [0, 1, 2, 5]
+ACC_INDICES = [10, 11, 12]
+RESIDUAL_TARGET_INDICES = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+DYN_LOSS_INDICES = [3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+TRAJ_LOSS_INDICES = [0, 1, 2, YAW_IDX]
+ROLLOUT_DYN_LOSS_INDICES = [3, 4, 5, YAWRATE_IDX, SLIP_IDX]
+ROLLOUT_DYN_LOSS_WEIGHTS = {
+    3: 0.5,
+    4: 1.0,
+    5: 2.5,
+    YAWRATE_IDX: 2.0,
+    SLIP_IDX: 2.0,
+}
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -119,10 +130,10 @@ BATCH_SIZE = 512
 EPOCHS = 200
 LR = 3e-4
 WEIGHT_DECAY = 1e-5
-D_MODEL = 128           # ssm model dimension
-HIDDEN_DIM = 256        # decoder hidden dimension
-SSM_LAYERS = 4          # stacked SSM layers
-SSM_STATE_DIM = 128     # internal recurrent state dimension
+D_MODEL = 96            # ssm model dimension
+HIDDEN_DIM = 192        # decoder hidden dimension
+SSM_LAYERS = 3          # stacked SSM layers
+SSM_STATE_DIM = 96      # internal recurrent state dimension
 DROPOUT = 0.1
 # LR warmup for temporal model
 WARMUP_EPOCHS = 10      # linear warmup for first 10 epochs
@@ -132,19 +143,21 @@ DREAM_STEPS = 400       # dream rollout length for evaluation (20s @ 20Hz)
 
 # Scheduled Sampling
 SS_START_EPOCH = 15
-SS_END_EPOCH = 140
-SS_MAX_RATIO = 0.2
+SS_END_EPOCH = 100
+SS_MAX_RATIO = 0.06
 
 # Curriculum Learning: rollout steps grow during training
 ROLLOUT_MIN = 5         # start with 5-step rollout (0.25s)
-ROLLOUT_MAX = 40        # grow to 40-step rollout (2.0s)
+ROLLOUT_MAX = 18        # grow to 18-step rollout (0.9s)
 ROLLOUT_GROW_START = 20
-ROLLOUT_GROW_END = 160  # reach max rollout by epoch 160
+ROLLOUT_GROW_END = 100  # reach max rollout by epoch 100
 ROLLOUT_WEIGHT = 0.15
 ROLLOUT_EVERY_N = 10
+ROLLOUT_DYN_WEIGHT = 0.06
 TRAJ_LOSS_W_START = 0.2
-TRAJ_LOSS_W_END = 1.0
-TRAJ_LOSS_RAMP_END = 160
+TRAJ_LOSS_W_END = 0.8
+TRAJ_LOSS_RAMP_END = 100
+STATE_CLIP_MARGIN = 0.1
 
 # Dream validation (for monitoring, NOT early stopping)
 DREAM_VAL_STEPS = 400   # 20s dream for validation metric (match eval)
@@ -154,6 +167,11 @@ SAVE_EVERY = 100        # save checkpoint every N epochs
 # Cosine annealing with warm restarts (after warmup)
 COSINE_T0 = 100         # first cycle length
 COSINE_TMULT = 2        # cycle length multiplier
+
+GRAVITY_MPS2 = 9.81
+GRAVITY_COMPENSATION_RATIO = 0.15
+MAX_GRAVITY_TILT_RAD = 0.25
+VERTICAL_VEL_DAMPING = 1.0
 
 TWO_PI = 2.0 * math.pi
 
@@ -183,48 +201,29 @@ class SequenceDataset(Dataset):
 
 # ─── Model ───────────────────────────────────────────────────────────────────
 
-class SSMBlock(nn.Module):
+class GRUBlock(nn.Module):
     def __init__(self, d_model: int, state_dim: int, dropout: float = 0.1):
         super().__init__()
         self.norm = nn.LayerNorm(d_model)
-        self.in_proj = nn.Linear(d_model, state_dim)
-        self.gate_proj = nn.Linear(d_model, d_model)
+        self.gru = nn.GRU(input_size=d_model, hidden_size=state_dim, batch_first=True)
         self.out_proj = nn.Linear(state_dim, d_model)
         self.residual = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
-        self.log_a = nn.Parameter(torch.zeros(state_dim))
-        self.b = nn.Parameter(torch.zeros(state_dim))
 
     def forward(self, x, h=None):
-        B, T, _ = x.shape
-        if h is None:
-            h = x.new_zeros(B, self.log_a.shape[0])
         x_norm = self.norm(x)
-        a = torch.exp(-torch.exp(self.log_a)).view(1, -1)
-        b = torch.sigmoid(self.b).view(1, -1)
-        outputs = []
-        for t in range(T):
-            u = self.in_proj(x_norm[:, t, :])
-            gate = torch.sigmoid(self.gate_proj(x_norm[:, t, :]))
-            h = a * h + b * u
-            y = self.out_proj(torch.tanh(h))
-            y = self.dropout(y) * gate
-            outputs.append((self.residual(x[:, t, :]) + y).unsqueeze(1))
-        return torch.cat(outputs, dim=1), h
+        out, h_new = self.gru(x_norm, h)
+        y = self.out_proj(out)
+        y = self.dropout(y)
+        return self.residual(x) + y, h_new
 
     def step(self, x, h=None):
-        if h is None:
-            h = x.new_zeros(x.size(0), self.log_a.shape[0])
         x_in = x
-        x = self.norm(x)
-        u = self.in_proj(x)
-        gate = torch.sigmoid(self.gate_proj(x))
-        a = torch.exp(-torch.exp(self.log_a)).view(1, -1)
-        b = torch.sigmoid(self.b).view(1, -1)
-        h = a * h + b * u
-        y = self.out_proj(torch.tanh(h))
-        y = self.dropout(y) * gate
-        return self.residual(x_in) + y, h
+        x_norm = self.norm(x).unsqueeze(1)
+        out, h_new = self.gru(x_norm, h)
+        y = self.out_proj(out.squeeze(1))
+        y = self.dropout(y)
+        return self.residual(x_in) + y, h_new
 
 
 class MambaBlock(nn.Module):
@@ -273,11 +272,13 @@ class WAM(nn.Module):
         self.num_layers = num_layers
         self.ssm_state_dim = ssm_state_dim
         self.residual_dim = len(RESIDUAL_TARGET_INDICES)
-        self.temporal_backend = "mamba" if MAMBA_AVAILABLE else "fallback_ssm"
+        self.temporal_backend = "mamba" if MAMBA_AVAILABLE else "gru"
         self._backend_checked = False
 
         self.register_buffer("s_mean", torch.zeros(state_dim))
         self.register_buffer("s_std", torch.ones(state_dim))
+        self.register_buffer("s_min", torch.full((state_dim,), -1e9))
+        self.register_buffer("s_max", torch.full((state_dim,), 1e9))
 
         self.obs_encoder = nn.Sequential(
             nn.Linear(obs_dim, d_model),
@@ -310,7 +311,10 @@ class WAM(nn.Module):
         return self.decoder_out(h)
 
     def _build_temporal_stack(self, backend, d_model, ssm_state_dim, dropout):
-        temporal_cls = MambaBlock if backend == "mamba" else SSMBlock
+        if backend == "gru":
+            temporal_cls = GRUBlock
+        else:
+            temporal_cls = MambaBlock
         return nn.ModuleList([
             temporal_cls(d_model=d_model, state_dim=ssm_state_dim, dropout=dropout)
             for _ in range(self.num_layers)
@@ -327,10 +331,10 @@ class WAM(nn.Module):
             )
         )
 
-    def _switch_to_fallback_ssm(self, device):
-        print("  Mamba CUDA kernel unavailable on this GPU, falling back to PyTorch SSM.", flush=True)
-        self.temporal_backend = "fallback_ssm"
-        self.temporal = self._build_temporal_stack("fallback_ssm", self.d_model, self.ssm_state_dim, self.decoder_drop.p).to(device)
+    def _switch_to_fallback_gru(self, device):
+        print("  Mamba CUDA kernel unavailable on this GPU, falling back to standard GRU.", flush=True)
+        self.temporal_backend = "gru"
+        self.temporal = self._build_temporal_stack("gru", self.d_model, self.ssm_state_dim, self.decoder_drop.p).to(device)
         self._backend_checked = True
 
     def _run_temporal_layers(self, z, hidden, step_mode=False):
@@ -351,13 +355,23 @@ class WAM(nn.Module):
         except RuntimeError as exc:
             if not self._should_fallback_from_exception(exc):
                 raise
-            self._switch_to_fallback_ssm(z.device)
+            self._switch_to_fallback_gru(z.device)
             hidden = self._init_hidden(z.size(0), z.device)
             return self._run_temporal_layers(z, hidden, step_mode=step_mode)
 
-    def set_normalization(self, s_mean, s_std):
+    def set_normalization(self, s_mean, s_std, s_min=None, s_max=None):
         self.s_mean.copy_(torch.as_tensor(s_mean, dtype=torch.float32))
         self.s_std.copy_(torch.as_tensor(s_std, dtype=torch.float32))
+        if s_min is not None and s_max is not None:
+            self.s_min.copy_(torch.as_tensor(s_min, dtype=torch.float32))
+            self.s_max.copy_(torch.as_tensor(s_max, dtype=torch.float32))
+
+    def _clip_state(self, value, idx):
+        low = self.s_min[idx]
+        high = self.s_max[idx]
+        span = torch.clamp(high - low, min=1e-6)
+        margin = span * STATE_CLIP_MARGIN
+        return torch.clamp(value, min=low - margin, max=high + margin)
 
     def _denorm_state(self, state):
         return state * self.s_std + self.s_mean
@@ -381,16 +395,31 @@ class WAM(nn.Module):
           for i, idx in enumerate(RESIDUAL_TARGET_INDICES)
       }
 
-      ax_next = residual_map[9]
-      ay_next = residual_map[10]
-      az_next = residual_map[11]
+      ax_next = residual_map[10]
+      ay_next = residual_map[11]
+      az_next = residual_map[12]
       vx_next = state_raw[..., 3] + ax_next * DT
       vy_next = state_raw[..., 4] + ay_next * DT
+      roll_proxy = torch.clamp(state_raw[..., 8] * DT, min=-MAX_GRAVITY_TILT_RAD, max=MAX_GRAVITY_TILT_RAD)
+      pitch_proxy = torch.clamp(state_raw[..., 9] * DT, min=-MAX_GRAVITY_TILT_RAD, max=MAX_GRAVITY_TILT_RAD)
+      gravity_vertical = GRAVITY_MPS2 * torch.cos(roll_proxy) * torch.cos(pitch_proxy)
+      az_inertial_next = az_next - GRAVITY_COMPENSATION_RATIO * gravity_vertical
+      vz_next = state_raw[..., VZ_IDX] * VERTICAL_VEL_DAMPING + az_inertial_next * DT
       yawrate_next = residual_map[YAWRATE_IDX]
+      ax_next = self._clip_state(ax_next, 10)
+      ay_next = self._clip_state(ay_next, 11)
+      az_next = self._clip_state(az_next, 12)
+      vx_next = self._clip_state(vx_next, 3)
+      vy_next = self._clip_state(vy_next, 4)
+      vz_next = self._clip_state(vz_next, VZ_IDX)
+      yawrate_next = self._clip_state(yawrate_next, YAWRATE_IDX)
       yaw_next = self._wrap_angle(state_raw[..., YAW_IDX] + yawrate_next * DT)
       posE_next = state_raw[..., 0] + (vx_next * torch.cos(yaw_next) - vy_next * torch.sin(yaw_next)) * DT
       posN_next = state_raw[..., 1] + (vx_next * torch.sin(yaw_next) + vy_next * torch.cos(yaw_next)) * DT
-      posU_next = state_raw[..., 2] + 0.5 * az_next * (DT ** 2)
+      posU_next = state_raw[..., 2] + 0.5 * (state_raw[..., VZ_IDX] + vz_next) * DT
+      residual_map[13] = self._clip_state(residual_map[13], 13)
+      for idx in [14, 15, 16, 17]:
+          residual_map[idx] = self._clip_state(residual_map[idx], idx)
 
       components = []
       for idx in range(self.state_dim):
@@ -404,6 +433,8 @@ class WAM(nn.Module):
               components.append(vx_next.unsqueeze(-1))
           elif idx == 4:
               components.append(vy_next.unsqueeze(-1))
+          elif idx == VZ_IDX:
+              components.append(vz_next.unsqueeze(-1))
           elif idx == YAW_IDX:
               components.append(yaw_next.unsqueeze(-1))
           elif idx in residual_map:
@@ -415,9 +446,7 @@ class WAM(nn.Module):
       return self._norm_state(next_raw)
 
     def _init_hidden(self, batch_size, device):
-        if self.temporal_backend == "mamba":
-            return [None for _ in range(self.num_layers)]
-        return [torch.zeros(batch_size, self.ssm_state_dim, device=device) for _ in range(self.num_layers)]
+        return [None for _ in range(self.num_layers)]
 
     def forward(self, states, actions, hidden=None):
         """
@@ -496,10 +525,24 @@ def load_multi_lap_data(raw_dir: Path, train_ratio: float, downsample: int = 1):
         # Downsample
         if downsample > 1:
             df = df.iloc[::downsample].reset_index(drop=True)
-        s = df[STATE_COLS].values.astype(np.float64)
+        source_state_cols = [
+            "posE_m", "posN_m", "posU_m",
+            "Vx_mps", "Vy_mps", "Vz_mps",
+            "yawAngle_rad",
+            "yawRate_radps",
+            "rollRate_radps",
+            "pitchRate_radps",
+            "axCG_mps2", "ayCG_mps2", "azCG_mps2",
+            "slipAngle_rad",
+            "wheelspeed_fl", "wheelspeed_fr",
+            "wheelspeed_rl", "wheelspeed_rr",
+        ]
+        s_src = df[source_state_cols].values.astype(np.float64)
+        s = np.zeros((len(df), STATE_DIM), dtype=np.float64)
+        s[:, 0:6] = s_src[:, 0:6]
+        s[:, YAW_IDX:] = s_src[:, 6:]
         a = df[ACTION_COLS].values.astype(np.float64)
-        yaw_idx = STATE_COLS.index("yawAngle_rad")
-        s[:, yaw_idx] = (s[:, yaw_idx] + np.pi) % (2 * np.pi) - np.pi
+        s[:, YAW_IDX] = (s[:, YAW_IDX] + np.pi) % (2 * np.pi) - np.pi
         n = len(df)
         split = int(n * train_ratio)
         train_segments.append((s[:split], a[:split]))
@@ -513,13 +556,16 @@ def load_multi_lap_data(raw_dir: Path, train_ratio: float, downsample: int = 1):
     all_s = np.concatenate(all_train_s, axis=0)
     all_a = np.concatenate(all_train_a, axis=0)
     s_mean, s_std = all_s.mean(axis=0), all_s.std(axis=0)
+    s_min, s_max = all_s.min(axis=0), all_s.max(axis=0)
     a_mean, a_std = all_a.mean(axis=0), all_a.std(axis=0)
     s_mean[YAW_IDX] = 0.0
     s_std[YAW_IDX] = 1.0
+    s_min[YAW_IDX] = -math.pi
+    s_max[YAW_IDX] = math.pi
     s_std[s_std < 1e-8] = 1.0
     a_std[a_std < 1e-8] = 1.0
 
-    norm = {"s_mean": s_mean, "s_std": s_std, "a_mean": a_mean, "a_std": a_std}
+    norm = {"s_mean": s_mean, "s_std": s_std, "s_min": s_min, "s_max": s_max, "a_mean": a_mean, "a_std": a_std}
 
     # Normalize all segments
     train_norm = [((s - s_mean) / s_std, (a - a_mean) / a_std)
@@ -612,7 +658,7 @@ def trajectory_loss_scale(epoch):
     return TRAJ_LOSS_W_START + frac * (TRAJ_LOSS_W_END - TRAJ_LOSS_W_START)
 
 
-def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, traj_weight, device):
+def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, traj_weight, dyn_weight, device):
     """
     Compute multi-step rollout loss with recurrent hidden state.
     """
@@ -634,8 +680,18 @@ def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, traj_
         pred, hidden = model.step(state, actions[:, t, :], hidden)
 
         target = s_next_gt[:, t, :]
-        diff = (pred[..., TRAJ_LOSS_INDICES] - target[..., TRAJ_LOSS_INDICES]) ** 2 * traj_weight
-        rollout_loss = rollout_loss + diff.mean()
+        traj_diff = (pred[..., TRAJ_LOSS_INDICES] - target[..., TRAJ_LOSS_INDICES]) ** 2 * traj_weight
+        rollout_traj_loss = traj_diff.mean()
+
+        rollout_loss = rollout_loss + rollout_traj_loss
+        if ROLLOUT_DYN_WEIGHT > 0:
+            rollout_dyn_weight = torch.stack([
+                dyn_weight[DYN_LOSS_INDICES.index(idx)] * ROLLOUT_DYN_LOSS_WEIGHTS.get(idx, 1.0)
+                for idx in ROLLOUT_DYN_LOSS_INDICES
+            ])
+            dyn_diff = (pred[..., ROLLOUT_DYN_LOSS_INDICES] - target[..., ROLLOUT_DYN_LOSS_INDICES]) ** 2 * rollout_dyn_weight
+            rollout_dyn_loss = dyn_diff.mean()
+            rollout_loss = rollout_loss + ROLLOUT_DYN_WEIGHT * rollout_dyn_loss
 
         state = pred.detach()
         if hidden is not None:
@@ -731,7 +787,7 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
                 do_rollout = epoch >= ROLLOUT_GROW_START and (batch_idx % ROLLOUT_EVERY_N == 0)
                 if do_rollout:
                     loss_rollout = compute_rollout_loss(
-                        model, s, a, s_next, rollout_k, traj_weight, device)
+                        model, s, a, s_next, rollout_k, traj_weight, dyn_weight, device)
                     loss = loss_tf + ROLLOUT_WEIGHT * loss_rollout
                 else:
                     loss = loss_tf
@@ -855,7 +911,7 @@ def evaluate_dream(model, s_val_n, a_val_n, s_val_raw, norm, device, dream_steps
         print(f"  {name}: MAE={mae:.4f} m")
     print(f"  --- Velocity ---")
     print(f"  Speed MAE:     {np.mean(speed_err):.4f} m/s")
-    for i, name in enumerate(["Vx", "Vy"]):
+    for i, name in enumerate(["Vx", "Vy", "Vz"]):
         mae = np.mean(np.abs(vel_errors[:, i]))
         print(f"  {name}: MAE={mae:.4f} m/s")
 
@@ -905,6 +961,21 @@ def evaluate_teacher_forcing(model, s_val_n, a_val_n, s_val_raw, norm, device):
 
 # ─── Visualization ───────────────────────────────────────────────────────────
 
+def save_figure(fig, out_dir: Path, stem: str, keep_html: bool = False):
+    if keep_html:
+        out = out_dir / f"{stem}.html"
+        fig.write_html(str(out), include_plotlyjs="cdn")
+        print(f"  saved {out}")
+        return
+    try:
+        out = out_dir / f"{stem}.svg"
+        fig.write_image(str(out))
+    except Exception:
+        out = out_dir / f"{stem}.html"
+        fig.write_html(str(out), include_plotlyjs="cdn")
+    print(f"  saved {out}")
+
+
 def plot_training_history(history, out_dir: Path):
     """Loss and LR curves."""
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
@@ -920,9 +991,7 @@ def plot_training_history(history, out_dir: Path):
     fig.update_yaxes(type="log", row=1, col=1)
     fig.update_yaxes(type="log", row=2, col=1)
     fig.update_layout(title="WAM v2 Training History", height=600, width=900)
-    out = out_dir / "wam_v2_training_loss.html"
-    fig.write_html(str(out), include_plotlyjs="cdn")
-    print(f"  saved {out}")
+    save_figure(fig, out_dir, "wam_v2_training_loss")
 
 
 def plot_dream_3d(pred_raw, gt_raw, out_dir: Path):
@@ -953,9 +1022,7 @@ def plot_dream_3d(pred_raw, gt_raw, out_dir: Path):
         ),
         width=1100, height=800,
     )
-    out = out_dir / "wam_v2_dream_3d.html"
-    fig.write_html(str(out), include_plotlyjs="cdn")
-    print(f"  saved {out}")
+    save_figure(fig, out_dir, "wam_v2_dream_3d", keep_html=True)
 
 
 def plot_dream_topdown(pred_raw, gt_raw, out_dir: Path):
@@ -980,9 +1047,7 @@ def plot_dream_topdown(pred_raw, gt_raw, out_dir: Path):
         width=1000, height=800,
         yaxis_scaleanchor="x", yaxis_scaleratio=1,
     )
-    out = out_dir / "wam_v2_dream_topdown.html"
-    fig.write_html(str(out), include_plotlyjs="cdn")
-    print(f"  saved {out}")
+    save_figure(fig, out_dir, "wam_v2_dream_topdown")
 
 
 def plot_dream_error_over_time(dist_3d, out_dir: Path):
@@ -996,9 +1061,7 @@ def plot_dream_error_over_time(dist_3d, out_dir: Path):
         xaxis_title="Time Horizon (s)", yaxis_title="3D Error (m)",
         width=900, height=400,
     )
-    out = out_dir / "wam_v2_dream_error_vs_time.html"
-    fig.write_html(str(out), include_plotlyjs="cdn")
-    print(f"  saved {out}")
+    save_figure(fig, out_dir, "wam_v2_dream_error_vs_time")
 
 
 def plot_state_comparison(pred_raw, gt_raw, out_dir: Path):
@@ -1021,18 +1084,16 @@ def plot_state_comparison(pred_raw, gt_raw, out_dir: Path):
         title="WAM v2 Dream: All State Dimensions",
         height=250 * n, width=1100,
     )
-    out = out_dir / "wam_v2_dream_states.html"
-    fig.write_html(str(out), include_plotlyjs="cdn")
-    print(f"  saved {out}")
+    save_figure(fig, out_dir, "wam_v2_dream_states")
 
 
 def plot_dream_velocity(pred_raw, gt_raw, out_dir: Path):
-    """Compare predicted vs actual velocity (Vx, Vy) during dream rollout."""
+    """Compare predicted vs actual velocity (Vx, Vy, Vz) during dream rollout."""
     t = np.arange(len(gt_raw)) * DT
-    vel_names = ["Vx_mps", "Vy_mps"]
+    vel_names = ["Vx_mps", "Vy_mps", "Vz_mps"]
 
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
-                        subplot_titles=["Vx (m/s)", "Vy (m/s)", "Speed Error (m/s)"],
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True,
+                        subplot_titles=["Vx (m/s)", "Vy (m/s)", "Vz (m/s)", "Speed Error (m/s)"],
                         vertical_spacing=0.08)
 
     for i, vi in enumerate(VEL_INDICES):
@@ -1049,15 +1110,13 @@ def plot_dream_velocity(pred_raw, gt_raw, out_dir: Path):
     speed_err = np.sqrt(np.sum(vel_err ** 2, axis=1))
     fig.add_trace(go.Scatter(x=t, y=speed_err, name="Speed Error",
                              line=dict(color="purple", width=1.5),
-                             showlegend=False), row=3, col=1)
+                             showlegend=False), row=4, col=1)
 
     fig.update_layout(
         title="WAM v2 Dream: Velocity Prediction vs Ground Truth",
-        height=700, width=1100,
+        height=900, width=1100,
     )
-    out = out_dir / "wam_v2_dream_velocity.html"
-    fig.write_html(str(out), include_plotlyjs="cdn")
-    print(f"  saved {out}")
+    save_figure(fig, out_dir, "wam_v2_dream_velocity")
 
 
 def plot_action_intervention(model, s_val_n, a_val_n, norm, device, out_dir: Path):
@@ -1116,9 +1175,7 @@ def plot_action_intervention(model, s_val_n, a_val_n, norm, device, out_dir: Pat
         width=1000, height=800,
         yaxis_scaleanchor="x", yaxis_scaleratio=1,
     )
-    out = out_dir / "wam_v2_action_intervention.html"
-    fig.write_html(str(out), include_plotlyjs="cdn")
-    print(f"  saved {out}")
+    save_figure(fig, out_dir, "wam_v2_action_intervention")
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
@@ -1165,7 +1222,7 @@ def main():
                 d_model=D_MODEL, num_layers=SSM_LAYERS,
                 ssm_state_dim=SSM_STATE_DIM,
                 hidden_dim=HIDDEN_DIM, dropout=DROPOUT)
-    model.set_normalization(norm["s_mean"], norm["s_std"])
+    model.set_normalization(norm["s_mean"], norm["s_std"], norm["s_min"], norm["s_max"])
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  Obs encoder input: {OBS_DIM}d (dynamic-only + sin/cos yaw)")
     print(f"  Temporal backend: {model.temporal_backend}")
