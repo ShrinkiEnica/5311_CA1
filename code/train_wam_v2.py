@@ -47,6 +47,17 @@ from torch.utils.data import Dataset, DataLoader
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+try:
+    from mamba_ssm import Mamba as MambaLayer
+    MAMBA_AVAILABLE = True
+except ImportError:
+    try:
+        from mamba_ssm.modules.mamba_simple import Mamba as MambaLayer
+        MAMBA_AVAILABLE = True
+    except ImportError:
+        MambaLayer = None
+        MAMBA_AVAILABLE = False
+
 # ─── Paths ───────────────────────────────────────────────────────────────────
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -102,7 +113,7 @@ DT = 0.005 * DOWNSAMPLE # 0.05s per step
 TRAIN_RATIO = 0.7
 SEQ_LEN = 100           # training sequence length (5.0s @ 20Hz)
 BATCH_SIZE = 256
-EPOCHS = 300
+EPOCHS = 200
 LR = 3e-4
 WEIGHT_DECAY = 1e-5
 D_MODEL = 128           # ssm model dimension
@@ -125,9 +136,12 @@ SS_MAX_RATIO = 0.5
 ROLLOUT_MIN = 5         # start with 5-step rollout (0.25s)
 ROLLOUT_MAX = 80        # grow to 80-step rollout (4.0s)
 ROLLOUT_GROW_START = 1
-ROLLOUT_GROW_END = 300  # reach max rollout by epoch 300
+ROLLOUT_GROW_END = 200  # reach max rollout by epoch 200
 ROLLOUT_WEIGHT = 0.3
 ROLLOUT_EVERY_N = 4
+TRAJ_LOSS_W_START = 0.2
+TRAJ_LOSS_W_END = 1.0
+TRAJ_LOSS_RAMP_END = 160
 
 # Dream validation (for monitoring, NOT early stopping)
 DREAM_VAL_STEPS = 400   # 20s dream for validation metric (match eval)
@@ -210,6 +224,27 @@ class SSMBlock(nn.Module):
         return self.residual(x_in) + y, h
 
 
+class MambaBlock(nn.Module):
+    def __init__(self, d_model: int, state_dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.norm = nn.LayerNorm(d_model)
+        self.mamba = MambaLayer(d_model=d_model, d_state=state_dim, d_conv=4, expand=2)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, h=None):
+        y = self.mamba(self.norm(x))
+        y = self.dropout(y)
+        return x + y, None
+
+    def step(self, x, h=None):
+        if h is None:
+            seq = x.unsqueeze(1)
+        else:
+            seq = torch.cat([h, x.unsqueeze(1)], dim=1)
+        y = self.mamba(self.norm(seq))
+        return seq[:, -1, :] + self.dropout(y[:, -1, :]), seq.detach()
+
+
 class WAM(nn.Module):
     """
     World Action Model v2 — State Space Model Architecture
@@ -235,6 +270,7 @@ class WAM(nn.Module):
         self.num_layers = num_layers
         self.ssm_state_dim = ssm_state_dim
         self.residual_dim = len(RESIDUAL_TARGET_INDICES)
+        self.temporal_backend = "mamba" if MAMBA_AVAILABLE else "fallback_ssm"
 
         self.register_buffer("s_mean", torch.zeros(state_dim))
         self.register_buffer("s_std", torch.ones(state_dim))
@@ -251,8 +287,9 @@ class WAM(nn.Module):
             nn.GELU(),
         )
 
+        temporal_cls = MambaBlock if MAMBA_AVAILABLE else SSMBlock
         self.temporal = nn.ModuleList([
-            SSMBlock(d_model=d_model, state_dim=ssm_state_dim, dropout=dropout)
+            temporal_cls(d_model=d_model, state_dim=ssm_state_dim, dropout=dropout)
             for _ in range(num_layers)
         ])
 
@@ -328,6 +365,8 @@ class WAM(nn.Module):
       return self._norm_state(next_raw)
 
     def _init_hidden(self, batch_size, device):
+        if self.temporal_backend == "mamba":
+            return [None for _ in range(self.num_layers)]
         return [torch.zeros(batch_size, self.ssm_state_dim, device=device) for _ in range(self.num_layers)]
 
     def forward(self, states, actions, hidden=None):
@@ -431,6 +470,8 @@ def load_multi_lap_data(raw_dir: Path, train_ratio: float, downsample: int = 1):
     all_a = np.concatenate(all_train_a, axis=0)
     s_mean, s_std = all_s.mean(axis=0), all_s.std(axis=0)
     a_mean, a_std = all_a.mean(axis=0), all_a.std(axis=0)
+    s_mean[YAW_IDX] = 0.0
+    s_std[YAW_IDX] = 1.0
     s_std[s_std < 1e-8] = 1.0
     a_std[a_std < 1e-8] = 1.0
 
@@ -513,6 +554,15 @@ def compute_losses(pred, target, dyn_weight, traj_weight):
     dyn_loss = ((pred[..., DYN_LOSS_INDICES] - target[..., DYN_LOSS_INDICES]) ** 2 * dyn_weight).mean()
     traj_loss = ((pred[..., TRAJ_LOSS_INDICES] - target[..., TRAJ_LOSS_INDICES]) ** 2 * traj_weight).mean()
     return dyn_loss, traj_loss
+
+
+def trajectory_loss_scale(epoch):
+    if epoch <= 1:
+        return TRAJ_LOSS_W_START
+    if epoch >= TRAJ_LOSS_RAMP_END:
+        return TRAJ_LOSS_W_END
+    frac = (epoch - 1) / max(1, TRAJ_LOSS_RAMP_END - 1)
+    return TRAJ_LOSS_W_START + frac * (TRAJ_LOSS_W_END - TRAJ_LOSS_W_START)
 
 
 def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, traj_weight, device):
@@ -614,6 +664,7 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
         ss_ratio = scheduled_sampling_ratio(
             epoch, SS_START_EPOCH, SS_END_EPOCH, SS_MAX_RATIO)
         rollout_k = curriculum_rollout_steps(epoch)
+        traj_scale = trajectory_loss_scale(epoch)
 
         # ---- Train ----
         model.train()
@@ -625,7 +676,7 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
             pred, _ = forward_with_scheduled_sampling(
                 model, s, a, s_next, ss_ratio, device)
             dyn_loss, traj_loss = compute_losses(pred, s_next, dyn_weight, traj_weight)
-            loss_tf = dyn_loss + traj_loss
+            loss_tf = dyn_loss + traj_scale * traj_loss
 
             if batch_idx % ROLLOUT_EVERY_N == 0:
                 loss_rollout = compute_rollout_loss(
@@ -650,7 +701,7 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
                 s, a, s_next = s.to(device), a.to(device), s_next.to(device)
                 pred, _ = model(s, a)
                 dyn_loss, traj_loss = compute_losses(pred, s_next, dyn_weight, traj_weight)
-                loss = dyn_loss + traj_loss
+                loss = dyn_loss + traj_scale * traj_loss
                 val_losses.append(loss.item())
         val_loss = np.mean(val_losses)
 
@@ -691,7 +742,7 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
             print(f"  Epoch {epoch:3d}/{config['epochs']} | "
                   f"train={train_loss:.6f} | val={val_loss:.6f} | "
                   f"dream={d_err:.2f}m | rollout_k={rollout_k} | "
-                  f"lr={current_lr:.1e} | ss={ss_ratio:.2f}{marker}",
+                  f"lr={current_lr:.1e} | ss={ss_ratio:.2f} | traj_w={traj_scale:.2f}{marker}",
                   flush=True)
 
         # # ---- Early stopping (DISABLED) ----
@@ -1060,6 +1111,7 @@ def main():
     model.set_normalization(norm["s_mean"], norm["s_std"])
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  Obs encoder input: {OBS_DIM}d (dynamic-only + sin/cos yaw)")
+    print(f"  Temporal backend: {model.temporal_backend}")
     print(f"  SSM: d_model={D_MODEL}, layers={SSM_LAYERS}, state_dim={SSM_STATE_DIM}")
     print(f"  Decoder hidden: {HIDDEN_DIM}")
     print(f"  Parameters: {n_params:,}")
@@ -1090,6 +1142,7 @@ def main():
             "obs_dim": OBS_DIM,
             "d_model": D_MODEL, "num_layers": SSM_LAYERS,
             "ssm_state_dim": SSM_STATE_DIM,
+            "temporal_backend": model.temporal_backend,
             "hidden_dim": HIDDEN_DIM, "dropout": DROPOUT,
             "state_cols": STATE_COLS, "action_cols": ACTION_COLS,
             "obs_indices": OBS_INDICES,
