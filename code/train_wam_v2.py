@@ -39,6 +39,7 @@ Dream:       给定初始状态 + 动作序列, 自回归推演未来轨迹
 
 import numpy as np
 import pandas as pd
+import math
 from pathlib import Path
 import torch
 import torch.nn as nn
@@ -84,8 +85,8 @@ ACTION_DIM = len(ACTION_COLS)  # 6
 
 POS_INDICES = [0, 1, 2]  # position indices in state vector
 VEL_INDICES = [3, 4]     # velocity indices in state vector
-OBS_INDICES = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]  # yaw, rates, accel, slip, wheelspeed
-OBS_DIM = len(OBS_INDICES)  # 12
+OBS_INDICES = list(range(STATE_DIM))  # all 17 state dims as encoder input
+OBS_DIM = STATE_DIM  # 17
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -98,13 +99,13 @@ BATCH_SIZE = 256
 EPOCHS = 300
 LR = 3e-4
 WEIGHT_DECAY = 1e-5
-D_MODEL = 128           # transformer model dimension
+D_MODEL = 128           # ssm model dimension
 HIDDEN_DIM = 256        # decoder hidden dimension
-TF_NHEAD = 4            # attention heads
-TF_LAYERS = 4           # transformer encoder layers
-TF_DIM_FF = 512         # feedforward dimension
-MAX_SEQ_LEN = 500       # max positional encoding length
+SSM_LAYERS = 4          # stacked SSM layers
+SSM_STATE_DIM = 128     # internal recurrent state dimension
 DROPOUT = 0.1
+# LR warmup for temporal model
+WARMUP_EPOCHS = 10      # linear warmup for first 10 epochs
 POS_WEIGHT_VAL = 10.0   # position loss weight
 VEL_WEIGHT_VAL = 5.0    # velocity loss weight
 DREAM_STEPS = 400       # dream rollout length for evaluation (20s @ 20Hz)
@@ -127,7 +128,7 @@ DREAM_VAL_STEPS = 400   # 20s dream for validation metric (match eval)
 DREAM_VAL_EVERY = 10    # evaluate dream every N epochs
 SAVE_EVERY = 100        # save checkpoint every N epochs
 
-# Cosine annealing with warm restarts
+# Cosine annealing with warm restarts (after warmup)
 COSINE_T0 = 100         # first cycle length
 COSINE_TMULT = 2        # cycle length multiplier
 
@@ -157,69 +158,97 @@ class SequenceDataset(Dataset):
 
 # ─── Model ───────────────────────────────────────────────────────────────────
 
+class SSMBlock(nn.Module):
+    def __init__(self, d_model: int, state_dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.norm = nn.LayerNorm(d_model)
+        self.in_proj = nn.Linear(d_model, state_dim)
+        self.gate_proj = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(state_dim, d_model)
+        self.residual = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+        self.log_a = nn.Parameter(torch.zeros(state_dim))
+        self.b = nn.Parameter(torch.zeros(state_dim))
+
+    def forward(self, x, h=None):
+        B, T, _ = x.shape
+        if h is None:
+            h = x.new_zeros(B, self.log_a.shape[0])
+        a = torch.exp(-torch.exp(self.log_a)).view(1, -1)
+        b = torch.sigmoid(self.b).view(1, -1)
+        outputs = []
+        for t in range(T):
+            x_t = self.norm(x[:, t, :])
+            u = self.in_proj(x_t)
+            gate = torch.sigmoid(self.gate_proj(x_t))
+            h = a * h + b * u
+            y = self.out_proj(torch.tanh(h))
+            y = self.dropout(y) * gate
+            outputs.append((self.residual(x[:, t, :]) + y).unsqueeze(1))
+        return torch.cat(outputs, dim=1), h
+
+    def step(self, x, h=None):
+        if h is None:
+            h = x.new_zeros(x.size(0), self.log_a.shape[0])
+        x = self.norm(x)
+        u = self.in_proj(x)
+        gate = torch.sigmoid(self.gate_proj(x))
+        a = torch.exp(-torch.exp(self.log_a)).view(1, -1)
+        b = torch.sigmoid(self.b).view(1, -1)
+        h = a * h + b * u
+        y = self.out_proj(torch.tanh(h))
+        y = self.dropout(y) * gate
+        return self.residual(x) + y, h
+
+
 class WAM(nn.Module):
     """
-    World Action Model v2 — Causal Transformer Architecture
+    World Action Model v2 — State Space Model Architecture
 
     Architecture:
-      Obs Encoder:    obs (12d) → d_model
-      Action Encoder: action (6d) → d_model
-      Positional Enc: learnable position embeddings
-      Temporal:       Causal Transformer Encoder (self-attention)
-      State Decoder:  d_model → Δstate (17d)
+      Obs Encoder:    obs → d_model
+      Action Encoder: action → d_model
+      Temporal:       stacked SSM blocks
+      State Decoder:  d_model → Δstate
       Transition:     s_{t+1} = s_t + Δstate
-
-    Encoder does NOT receive position or velocity.
-    Position and velocity are predicted as outputs via residual delta.
     """
 
     def __init__(self, state_dim: int, action_dim: int,
                  obs_dim: int = 12,
-                 d_model: int = 128, nhead: int = 4,
-                 num_layers: int = 4, dim_ff: int = 512,
+                 d_model: int = 128, num_layers: int = 4,
+                 ssm_state_dim: int = 128,
                  hidden_dim: int = 256, dropout: float = 0.1,
-                 max_seq_len: int = 500, **kwargs):
+                 **kwargs):
         super().__init__()
         self.state_dim = state_dim
         self.obs_dim = obs_dim
         self.d_model = d_model
+        self.num_layers = num_layers
+        self.ssm_state_dim = ssm_state_dim
 
-        # Observation encoder (dynamics only: no pos/vel)
         self.obs_encoder = nn.Sequential(
             nn.Linear(obs_dim, d_model),
             nn.LayerNorm(d_model),
             nn.GELU(),
         )
 
-        # Action encoder
         self.action_encoder = nn.Sequential(
             nn.Linear(action_dim, d_model),
             nn.LayerNorm(d_model),
             nn.GELU(),
         )
 
-        # Learnable positional encoding
-        self.pos_enc = nn.Embedding(max_seq_len, d_model)
+        self.temporal = nn.ModuleList([
+            SSMBlock(d_model=d_model, state_dim=ssm_state_dim, dropout=dropout)
+            for _ in range(num_layers)
+        ])
 
-        # Causal Transformer encoder
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=nhead, dim_feedforward=dim_ff,
-            dropout=dropout, activation='gelu', batch_first=True,
-            norm_first=True,
-        )
-        self.transformer = nn.TransformerEncoder(
-            encoder_layer, num_layers=num_layers,
-            enable_nested_tensor=False,
-        )
-
-        # State decoder: d_model → Δstate (two-layer with skip)
         self.decoder_fc1 = nn.Linear(d_model, hidden_dim)
         self.decoder_ln = nn.LayerNorm(hidden_dim)
         self.decoder_fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.decoder_out = nn.Linear(hidden_dim, state_dim)
         self.decoder_drop = nn.Dropout(dropout)
 
-        # Small init for output layer → initial delta ≈ 0
         nn.init.zeros_(self.decoder_out.bias)
         nn.init.uniform_(self.decoder_out.weight, -0.001, 0.001)
 
@@ -230,59 +259,48 @@ class WAM(nn.Module):
         h = self.decoder_drop(h)
         return self.decoder_out(h)
 
-    def _causal_mask(self, T, device):
-        """Generate causal attention mask (upper triangular -inf)."""
-        return nn.Transformer.generate_square_subsequent_mask(T, device=device)
-
-    def _encode_step(self, state, action, t):
-        """Encode a single (state, action) pair at position t → [B, 1, d_model]."""
-        obs = state.unsqueeze(1)[..., OBS_INDICES]    # [B, 1, obs_dim]
-        z_obs = self.obs_encoder(obs)                  # [B, 1, d_model]
-        z_act = self.action_encoder(action.unsqueeze(1))  # [B, 1, d_model]
-        z_pos = self.pos_enc(torch.tensor([t], device=state.device))  # [1, d_model]
-        return z_obs + z_act + z_pos
+    def _init_hidden(self, batch_size, device):
+        return [torch.zeros(batch_size, self.ssm_state_dim, device=device) for _ in range(self.num_layers)]
 
     def forward(self, states, actions, hidden=None):
         """
-        Teacher-forcing forward pass (efficient parallel with causal mask).
+        Teacher-forcing forward pass.
         states:  [B, T, state_dim]  — ground truth full states
         actions: [B, T, action_dim]
-        Returns: predicted s_{t+1} [B, T, state_dim], None
+        Returns: predicted s_{t+1} [B, T, state_dim], hidden
         """
-        obs = states[..., OBS_INDICES]                # [B, T, obs_dim]
-        z_obs = self.obs_encoder(obs)                 # [B, T, d_model]
-        z_act = self.action_encoder(actions)          # [B, T, d_model]
-        B, T, _ = z_obs.shape
-        positions = torch.arange(T, device=z_obs.device)
-        z_pos = self.pos_enc(positions)               # [T, d_model]
-        tokens = z_obs + z_act + z_pos                # [B, T, d_model]
+        obs = states[..., OBS_INDICES]
+        z = self.obs_encoder(obs) + self.action_encoder(actions)
+        B = z.size(0)
+        if hidden is None:
+            hidden = self._init_hidden(B, z.device)
 
-        mask = self._causal_mask(T, tokens.device)
-        z_out = self.transformer(tokens, mask=mask, is_causal=True)
-        delta = self._decode(z_out)                   # [B, T, state_dim]
+        new_hidden = []
+        for layer, h in zip(self.temporal, hidden):
+            z, h_new = layer(z, h)
+            new_hidden.append(h_new)
+
+        delta = self._decode(z)
         next_states = states + delta
+        return next_states, new_hidden
 
-        return next_states, None
-
-    def step(self, state, action, past_tokens, t):
+    def step(self, state, action, hidden=None):
         """
-        Single autoregressive step (for dream and rollout).
-        state:       [B, state_dim]
-        action:      [B, action_dim]
-        past_tokens: list of [B, 1, d_model] tensors (context)
-        t:           time step index
-        Returns:     next_state [B, state_dim], updated past_tokens
+        Single autoregressive step.
         """
-        token = self._encode_step(state, action, t)
-        past_tokens.append(token)
+        obs = state[..., OBS_INDICES]
+        z = self.obs_encoder(obs) + self.action_encoder(action)
+        if hidden is None:
+            hidden = self._init_hidden(z.size(0), z.device)
 
-        tokens = torch.cat(past_tokens, dim=1)        # [B, t+1, d_model]
-        mask = self._causal_mask(tokens.size(1), tokens.device)
-        z_out = self.transformer(tokens, mask=mask, is_causal=True)
+        new_hidden = []
+        for layer, h in zip(self.temporal, hidden):
+            z, h_new = layer.step(z, h)
+            new_hidden.append(h_new)
 
-        delta = self._decode(z_out[:, -1:, :])        # [B, 1, state_dim]
-        next_state = state + delta.squeeze(1)          # [B, state_dim]
-        return next_state, past_tokens
+        delta = self._decode(z)
+        next_state = state + delta
+        return next_state, new_hidden
 
     @torch.no_grad()
     def dream(self, init_state, action_seq, hidden=None):
@@ -296,11 +314,9 @@ class WAM(nn.Module):
         B, T, _ = action_seq.shape
         predictions = []
         state = init_state
-        past_tokens = []
 
         for t in range(T):
-            state, past_tokens = self.step(
-                state, action_seq[:, t, :], past_tokens, t)
+            state, hidden = self.step(state, action_seq[:, t, :], hidden)
             predictions.append(state)
 
         return torch.stack(predictions, dim=1)
@@ -433,8 +449,7 @@ def forward_with_scheduled_sampling(model, states, actions, s_next_gt, ss_ratio,
 
 def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, pos_weight, device):
     """
-    Compute multi-step rollout loss using model.step() with growing context.
-    Detaches old context tokens to save memory.
+    Compute multi-step rollout loss with recurrent hidden state.
     """
     B, T, sd = states.shape
     K = min(rollout_steps, T)
@@ -445,22 +460,21 @@ def compute_rollout_loss(model, states, actions, s_next_gt, rollout_steps, pos_w
         return torch.tensor(0.0, device=device)
     start_idx = torch.randint(0, max_start, (1,)).item()
 
-    state = states[:, start_idx, :]  # [B, sd]
-    past_tokens = []
+    state = states[:, start_idx, :]
+    hidden = None
     rollout_loss = torch.tensor(0.0, device=device)
 
     for k in range(K):
         t = start_idx + k
-        pred, past_tokens = model.step(
-            state, actions[:, t, :], past_tokens, k)
+        pred, hidden = model.step(state, actions[:, t, :], hidden)
 
-        target = s_next_gt[:, t, :]  # [B, sd]
+        target = s_next_gt[:, t, :]
         diff = (pred - target) ** 2 * pos_weight
         rollout_loss = rollout_loss + diff.mean()
 
-        # Detach old tokens to limit memory; keep gradient through state
-        past_tokens = [pt.detach() for pt in past_tokens]
-        state = pred  # gradient flows through state → next step
+        state = pred.detach()
+        if hidden is not None:
+            hidden = [h.detach() for h in hidden]
 
     return rollout_loss / K
 
@@ -505,8 +519,15 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"],
                                   weight_decay=config["weight_decay"])
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, T_0=COSINE_T0, T_mult=COSINE_TMULT, eta_min=1e-6)
+    # Warmup + Cosine Annealing
+    def lr_lambda(epoch):
+        if epoch < WARMUP_EPOCHS:
+            return (epoch + 1) / WARMUP_EPOCHS
+        else:
+            # Cosine annealing after warmup
+            epoch_after_warmup = epoch - WARMUP_EPOCHS
+            return 0.5 * (1 + math.cos(math.pi * epoch_after_warmup / (EPOCHS - WARMUP_EPOCHS)))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     # Position + velocity weighted loss
     pos_weight = torch.ones(STATE_DIM, device=device)
@@ -547,6 +568,7 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            scheduler.step()
             train_losses.append(loss.item())
 
         train_loss = np.mean(train_losses)
@@ -577,7 +599,6 @@ def train_model(model, train_loader, val_loader, val_seg_n, norm, config,
         history["lr"].append(current_lr)
         history["ss_ratio"].append(ss_ratio)
         history["rollout_k"].append(rollout_k)
-        scheduler.step()
 
         # Save best model by dream error
         marker = ""
@@ -964,12 +985,12 @@ def main():
     # 2) Build model
     print("\n[2/6] Building WAM v2...")
     model = WAM(STATE_DIM, ACTION_DIM, obs_dim=OBS_DIM,
-                d_model=D_MODEL, nhead=TF_NHEAD, num_layers=TF_LAYERS,
-                dim_ff=TF_DIM_FF, hidden_dim=HIDDEN_DIM, dropout=DROPOUT,
-                max_seq_len=MAX_SEQ_LEN)
+                d_model=D_MODEL, num_layers=SSM_LAYERS,
+                ssm_state_dim=SSM_STATE_DIM,
+                hidden_dim=HIDDEN_DIM, dropout=DROPOUT)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"  Obs encoder input: {OBS_DIM}d (no pos/vel)")
-    print(f"  Transformer: d_model={D_MODEL}, heads={TF_NHEAD}, layers={TF_LAYERS}, ff={TF_DIM_FF}")
+    print(f"  Obs encoder input: {OBS_DIM}d (full state)")
+    print(f"  SSM: d_model={D_MODEL}, layers={SSM_LAYERS}, state_dim={SSM_STATE_DIM}")
     print(f"  Decoder hidden: {HIDDEN_DIM}")
     print(f"  Parameters: {n_params:,}")
 
@@ -997,10 +1018,9 @@ def main():
         "config": {
             "state_dim": STATE_DIM, "action_dim": ACTION_DIM,
             "obs_dim": OBS_DIM,
-            "d_model": D_MODEL, "nhead": TF_NHEAD,
-            "num_layers": TF_LAYERS, "dim_ff": TF_DIM_FF,
+            "d_model": D_MODEL, "num_layers": SSM_LAYERS,
+            "ssm_state_dim": SSM_STATE_DIM,
             "hidden_dim": HIDDEN_DIM, "dropout": DROPOUT,
-            "max_seq_len": MAX_SEQ_LEN,
             "state_cols": STATE_COLS, "action_cols": ACTION_COLS,
             "obs_indices": OBS_INDICES,
         },

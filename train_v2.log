@@ -17,7 +17,7 @@ WAM v2 — World Action Model with Temporal Dynamics
     Lap_8: 2221 pts (ds=10) -> train=1554, val=667
     Lap_9: 2891 pts (ds=10) -> train=2023, val=868
   Total: train=16515, val=7087 (10 laps)
-  State dim: 17, Obs dim: 12, Action dim: 6
+  State dim: 17, Obs dim: 17, Action dim: 6
   Seq len: 100 (5.0s)
   Train sequences: 15515
   Val sequences: 6087
@@ -28,26 +28,14 @@ WAM v2 — World Action Model with Temporal Dynamics
   Device: cuda
 
 [2/6] Building WAM v2...
-  Obs encoder input: 12d (no pos/vel)
-  Transformer: d_model=128, heads=4, layers=4, ff=512
+  Obs encoder input: 17d (full state)
+  SSM: d_model=128, layers=4, state_dim=128
   Decoder hidden: 256
-  Parameters: 963,857
+  Parameters: 373,649
 
 [3/6] Training with curriculum rollout + scheduled sampling...
-  Epoch   1/300 | train=0.198680 | val=0.153768 | dream=247.55m | rollout_k=5 | lr=3.0e-04 | ss=0.00 *
-  Epoch  10/300 | train=0.134489 | val=0.147049 | dream=210.30m | rollout_k=7 | lr=2.9e-04 | ss=0.01 *
-  Epoch  20/300 | train=0.121041 | val=0.147668 | dream=219.65m | rollout_k=9 | lr=2.7e-04 | ss=0.04
-  Epoch  30/300 | train=0.110974 | val=0.150537 | dream=221.26m | rollout_k=12 | lr=2.4e-04 | ss=0.06
-  Epoch  40/300 | train=0.101693 | val=0.154173 | dream=199.40m | rollout_k=14 | lr=2.0e-04 | ss=0.09 *
-  Epoch  50/300 | train=0.095175 | val=0.158812 | dream=241.70m | rollout_k=17 | lr=1.6e-04 | ss=0.12
-  Epoch  60/300 | train=0.091520 | val=0.161781 | dream=239.01m | rollout_k=19 | lr=1.1e-04 | ss=0.14
-  Epoch  70/300 | train=0.088413 | val=0.163063 | dream=186.79m | rollout_k=22 | lr=6.6e-05 | ss=0.17 *
-  Epoch  80/300 | train=0.087780 | val=0.163279 | dream=201.06m | rollout_k=24 | lr=3.2e-05 | ss=0.19
-  Epoch  90/300 | train=0.087881 | val=0.163971 | dream=193.32m | rollout_k=27 | lr=9.8e-06 | ss=0.22
-  Epoch 100/300 | train=0.089054 | val=0.163724 | dream=186.74m | rollout_k=29 | lr=1.1e-06 | ss=0.24 *
-  Epoch 110/300 | train=0.087007 | val=0.167851 | dream=126.60m | rollout_k=32 | lr=3.0e-04 | ss=0.27 *
-  Epoch 120/300 | train=0.081715 | val=0.168970 | dream=108.50m | rollout_k=34 | lr=2.9e-04 | ss=0.29 *
-  Epoch 130/300 | train=0.076929 | val=0.173425 | dream=130.36m | rollout_k=37 | lr=2.8e-04 | ss=0.32
-  Epoch 140/300 | train=0.073272 | val=0.174835 | dream=263.39m | rollout_k=39 | lr=2.7e-04 | ss=0.35
-  Epoch 150/300 | train=0.069285 | val=0.174203 | dream=212.04m | rollout_k=42 | lr=2.6e-04 | ss=0.37
-  Epoch 160/300 | train=0.065985 | val=0.173992 | dream=218.07m | rollout_k=44 | lr=2.4e-04 | ss=0.40
+  Epoch   1/300 | train=0.188958 | val=0.149584 | dream=403.60m | rollout_k=5 | lr=2.8e-04 | ss=0.00 *
+  Epoch  10/300 | train=0.130483 | val=0.156320 | dream=192.22m | rollout_k=7 | lr=3.0e-04 | ss=0.01 *
+  Epoch  20/300 | train=0.117210 | val=0.172361 | dream=191.97m | rollout_k=9 | lr=2.8e-04 | ss=0.04 *
+  Epoch  30/300 | train=0.106021 | val=0.190244 | dream=191.57m | rollout_k=12 | lr=2.5e-04 | ss=0.06 *
+  Epoch  40/300 | train=0.094595 | val=0.211256 | dream=135.72m | rollout_k=14 | lr=2.1e-04 | ss=0.09 *
